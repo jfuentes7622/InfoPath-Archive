@@ -92,7 +92,8 @@ Output under `OutputDirectory/Normalized`:
 
 Attachment behavior (updated):
 
-- Embedded InfoPath attachments (base64 payloads) are extracted to files.
+- Embedded InfoPath attachment envelopes are decoded as raw bytes; documents, images, email messages, archives, and other file types are supported.
+- The embedded filename and extension are preserved. An attachment without an extension is written with `.bin`.
 - Field values are converted to markers: `ATTACHMENT::relative/path/to/file`.
 - Attachment files are written to per-source attachment folders under `Normalized`.
 
@@ -145,6 +146,8 @@ Notes:
 
 - Calls `CreateXSLTfromInfopathFile.ps1` internally.
 - Chooses representative sample with highest field count per group.
+- Dotted version segments in the output base name are preserved. For example, `tmpl__1.0.0.3667__1.0.0` produces `tmpl__1.0.0.3667__1.0.0.xslt`.
+- A mapping is marked successful only after its generated XSLT, CSS, and log files are verified on disk.
 
 ### 6) Transform XML to HTML
 
@@ -163,7 +166,7 @@ Input:
 Output:
 
 - HTML files mirroring source folder layout
-- Optional PDFs
+- Optional PDFs generated through headless Microsoft Edge or Google Chrome
 - Copied CSS assets
 - `ProcessInfopathToHTML-errors.log`
 - `FailedInfoPathFiles` folder for failures
@@ -173,6 +176,14 @@ Attachment behavior (updated):
 - Embedded attachments are decoded and saved beside generated HTML in `<baseName>_attachments` folders.
 - XML values are rewritten to `ATTACHMENT::...` markers before transform.
 - Generated templates render these markers as clickable relative links.
+- Attachment `href` values and stylesheet paths are relative to the generated HTML file, so the HTML, CSS, and attachment folders can be moved together.
+- The original XML source path displayed in the HTML is absolute informational text, not a resource link.
+
+PDF behavior:
+
+- Set `-PrintToPdf true` to generate a PDF beside each HTML file.
+- The script searches system and per-user installations of Microsoft Edge first, followed by Google Chrome.
+- Common 64-bit and 32-bit `Program Files` locations are supported.
 
 ## XSLT Generator Update
 
@@ -227,8 +238,11 @@ Optional PDF output:
 |  |- tmpl__*.css
 |  \- tmpl__*.log
 \- Html
-   |- <mirrored folders and .html/.pdf>
-   |- <baseName>_attachments
+  |- <mirrored source folders, when -Recurse is used>
+  |- <baseName>.html
+  |- <baseName>.pdf (when -PrintToPdf is enabled)
+  |- <baseName>_attachments
+  |- tmpl__*.css
    |- FailedInfoPathFiles
    \- ProcessInfopathToHTML-errors.log
 ```
@@ -246,6 +260,7 @@ Optional PDF output:
 - Confirm `InfoPathGroupingDetailed.csv` exists and has `SuggestedGroup` values.
 - Confirm `InfoPathXsltGroupMap.csv` contains those groups.
 - Confirm `XsltPath` files exist on disk.
+- Rerun Stage 5 if a mapping refers to an older or missing template filename.
 
 ### Attachment links show but file missing
 
@@ -253,6 +268,13 @@ Optional PDF output:
 - `Reports/Normalized` for property path output
 - `Html/<baseName>_attachments` for HTML output
 - Confirm source XML payload is valid InfoPath attachment format.
+- Keep each HTML file, its matching `<baseName>_attachments` folder, and the copied `tmpl__*.css` file together when moving output.
+
+### Edge or Chrome not detected for PDF output
+
+- Confirm Edge or Chrome is installed as a desktop application, not only available through a URL protocol or shortcut.
+- Common locations include `C:\Program Files\Microsoft\Edge\Application\msedge.exe`, `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`, and per-user installations under `%LOCALAPPDATA%`.
+- Run without `-PrintToPdf true` when only HTML output is needed.
 
 ### Empty extraction output
 
