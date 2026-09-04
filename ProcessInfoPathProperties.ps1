@@ -333,7 +333,10 @@ function Get-RelativePath {
 		[string]$FullPath
 	)
 
-	$basePath = [System.IO.Path]::GetFullPath($BasePath)
+	$basePath = [System.IO.Path]::GetFullPath($BasePath).TrimEnd(
+		[System.IO.Path]::DirectorySeparatorChar,
+		[System.IO.Path]::AltDirectorySeparatorChar
+	)
 	$fullPath = [System.IO.Path]::GetFullPath($FullPath)
 
 	try {
@@ -378,6 +381,7 @@ function Get-NodeChildElements {
 function Try-DecodeInfoPathAttachment {
 	param(
 		[Parameter(Mandatory = $true)]
+		[AllowEmptyString()]
 		[string]$Value
 	)
 
@@ -411,14 +415,19 @@ function Try-DecodeInfoPathAttachment {
 	try {
 		$null = $reader.ReadBytes(16)
 		$fileSize = $reader.ReadUInt32()
-		$fileNameLength = $reader.ReadUInt32()
+		$fileNameCharacterCount = $reader.ReadUInt32()
 
-		if ($fileNameLength -lt 2 -or $fileNameLength -gt ($bytes.Length - 24)) {
+		if ($fileNameCharacterCount -lt 1 -or $fileNameCharacterCount -gt [int]::MaxValue / 2) {
 			return $null
 		}
 
-		$fileNameBytes = $reader.ReadBytes([int]$fileNameLength)
-		if ($fileNameBytes.Length -lt [int]$fileNameLength) {
+		$fileNameByteLength = [int]$fileNameCharacterCount * 2
+		if ($fileNameByteLength -gt ($bytes.Length - 24)) {
+			return $null
+		}
+
+		$fileNameBytes = $reader.ReadBytes($fileNameByteLength)
+		if ($fileNameBytes.Length -lt $fileNameByteLength) {
 			return $null
 		}
 

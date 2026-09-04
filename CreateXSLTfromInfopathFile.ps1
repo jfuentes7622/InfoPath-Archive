@@ -390,7 +390,7 @@ if ($null -eq $xmlDocument.DocumentElement) {
 	throw "The XML file does not contain a document element: $InfoPathXmlPath"
 }
 
-$baseOutputName = [System.IO.Path]::GetFileNameWithoutExtension($OutputName)
+$baseOutputName = [System.IO.Path]::GetFileName($OutputName)
 if ([string]::IsNullOrWhiteSpace($baseOutputName)) {
 	throw "OutputName must include at least one valid character."
 }

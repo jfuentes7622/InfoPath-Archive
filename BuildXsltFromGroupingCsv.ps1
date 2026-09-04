@@ -278,6 +278,12 @@ foreach ($group in $groupedRows) {
             $actualCssPath = $expectedCssPath
             $actualLogPath = $expectedLogPath
         }
+
+        foreach ($generatedPath in @($actualXsltPath, $actualCssPath, $actualLogPath)) {
+            if ([string]::IsNullOrWhiteSpace([string]$generatedPath) -or -not (Test-Path -LiteralPath $generatedPath -PathType Leaf)) {
+                throw "Template generator reported success but did not create the expected file: $generatedPath"
+            }
+        }
         
         Write-LogEntry -LogEntries $logEntries -Message "Generated XSLT for group '$suggestedGroup' => '$actualXsltPath'."
     }

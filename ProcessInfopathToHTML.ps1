@@ -158,7 +158,10 @@ function Get-RelativePath {
 	)
 
 	# Normalize paths to absolute form
-	$basePath = [System.IO.Path]::GetFullPath($BasePath)
+	$basePath = [System.IO.Path]::GetFullPath($BasePath).TrimEnd(
+		[System.IO.Path]::DirectorySeparatorChar,
+		[System.IO.Path]::AltDirectorySeparatorChar
+	)
 	$fullPath = [System.IO.Path]::GetFullPath($FullPath)
 
 	# Use Uri to calculate relative path (compatible with .NET Framework)
@@ -192,9 +195,11 @@ function Convert-ToXsltParamName {
 function Find-PdfBrowser {
 	$candidates = @(
 		"$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
-		"$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe",
+		"${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+		"$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe",
 		"$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-		"$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe"
+		"${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+		"$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
 	)
 
 	foreach ($candidate in $candidates) {
@@ -435,6 +440,7 @@ function Get-NodeChildElements {
 function Try-DecodeInfoPathAttachment {
 	param(
 		[Parameter(Mandatory = $true)]
+		[AllowEmptyString()]
 		[string]$Value
 	)
 
@@ -468,14 +474,19 @@ function Try-DecodeInfoPathAttachment {
 	try {
 		$null = $reader.ReadBytes(16)
 		$fileSize = $reader.ReadUInt32()
-		$fileNameLength = $reader.ReadUInt32()
+		$fileNameCharacterCount = $reader.ReadUInt32()
 
-		if ($fileNameLength -lt 2 -or $fileNameLength -gt ($bytes.Length - 24)) {
+		if ($fileNameCharacterCount -lt 1 -or $fileNameCharacterCount -gt [int]::MaxValue / 2) {
 			return $null
 		}
 
-		$fileNameBytes = $reader.ReadBytes([int]$fileNameLength)
-		if ($fileNameBytes.Length -lt [int]$fileNameLength) {
+		$fileNameByteLength = [int]$fileNameCharacterCount * 2
+		if ($fileNameByteLength -gt ($bytes.Length - 24)) {
+			return $null
+		}
+
+		$fileNameBytes = $reader.ReadBytes($fileNameByteLength)
+		if ($fileNameBytes.Length -lt $fileNameByteLength) {
 			return $null
 		}
 
