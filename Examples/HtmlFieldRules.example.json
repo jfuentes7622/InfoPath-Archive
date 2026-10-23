@@ -1,0 +1,20 @@
+{
+  "Culture": "en-US",
+  "Namespaces": {
+    "my": "urn:example:infopath"
+  },
+  "Fields": [
+    { "XPath": "//my:CalculatedResult", "Type": "Calculated" },
+    { "XPath": "//my:Amount", "Type": "Currency" },
+    { "XPath": "//my:Count", "Type": "Number" },
+    { "XPath": "//my:Rate", "Type": "Percentage" },
+    { "XPath": "//my:Status", "Type": "Dropdown", "Values": { "1": "Approved", "2": "Rejected" } },
+    { "XPath": "//my:RadioChoice", "Type": "Radio", "Values": { "Y": "Yes", "N": "No" } },
+    { "XPath": "//my:Person", "Type": "Person", "Values": { "DOMAIN\\jsmith": "John Smith" } },
+    { "XPath": "//my:DocumentLink", "Type": "Hyperlink", "UrlXPath": "my:Url", "DescriptionXPath": "my:Description" },
+    { "XPath": "//my:Signature", "Type": "Signature", "SignerXPath": "my:Signer", "DateXPath": "my:SignedDate", "Values": { "DOMAIN\\jsmith": "John Smith" } },
+    { "XPath": "//my:FileReference", "Type": "Attachment" },
+    { "XPath": "//my:RawUpload", "Type": "Attachment", "Encoding": "base64", "FileName": "Invoice.pdf" },
+    { "XPath": "//my:Identifier", "Type": "Text" }
+  ]
+}

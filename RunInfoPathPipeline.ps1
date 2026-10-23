@@ -39,8 +39,16 @@
     internal XML names. Structural identifiers are unchanged. Default: $true.
 
 .PARAMETER DateFormat
-    .NET date/time format for date values displayed in HTML (and printed PDFs).
+    .NET format for date-only values displayed in HTML (and printed PDFs).
     Does not change source XML, normalized CSVs, or metadata. Default: MM/dd/yyyy.
+
+.PARAMETER DateTimeFormat
+    .NET format for date/time values in HTML. Stored clock times and offsets are
+    retained. Default: MM/dd/yyyy HH:mm.
+
+.PARAMETER FieldRulesPath
+    Optional JSON field definitions and display-value mappings for HTML output.
+    Passed to template generation and HTML rendering; CSV extraction is unchanged.
 
 .EXAMPLE
     .\RunInfoPathPipeline.ps1 `
@@ -79,11 +87,22 @@ param(
         $null = [datetime]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
         return $true
     })]
-    [string]$DateFormat = "MM/dd/yyyy"
+    [string]$DateFormat = "MM/dd/yyyy",
+
+    [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        $null = [datetimeoffset]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
+        return $true
+    })]
+    [string]$DateTimeFormat = "MM/dd/yyyy HH:mm",
+
+    [string]$FieldRulesPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+$null = Import-HtmlFieldRules -Path $FieldRulesPath
 
 function Write-Stage {
     param(
@@ -180,10 +199,10 @@ try {
     & $groupingScript -InputCsvPath $versionCsvPath -OutputCsvPath $groupingDetailedPath -SummaryCsvPath $groupingSummaryPath
 
     Write-Stage -Group Run -Message "Step 5/6: Build XSLT templates per group"
-    & $buildXsltScript -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName
+    & $buildXsltScript -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath
 
     Write-Stage -Group Run -Message "Step 6/6: Transform InfoPath XML to HTML"
-    & $htmlScript -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat
+    & $htmlScript -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat -FieldRulesPath $FieldRulesPath
 
     $duration = (Get-Date) - $startTime
     Write-Stage -Group Done -Message "Pipeline completed successfully in $($duration.ToString())."

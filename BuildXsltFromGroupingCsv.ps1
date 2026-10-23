@@ -27,6 +27,9 @@
     Use readable labels derived from XML names in generated templates.
     Set to $false for exact internal XML names. Default: $true.
 
+.PARAMETER FieldRulesPath
+    Optional JSON HTML field definitions; forwarded to the XSLT generator.
+
 .EXAMPLE
     .\BuildXsltFromGroupingCsv.ps1 `
       -GroupingCsvPath "C:\Save\Reports\InfoPathGroupingDetailed.csv" `
@@ -47,7 +50,9 @@ param(
 
     [string]$CreateXsltScriptPath = (Join-Path -Path $PSScriptRoot -ChildPath 'CreateXSLTfromInfopathFile.ps1'),
 
-    [bool]$UseDisplayName = $true
+    [bool]$UseDisplayName = $true,
+
+    [string]$FieldRulesPath
 )
 
 Set-StrictMode -Version Latest
@@ -261,7 +266,7 @@ foreach ($group in $groupedRows) {
 
     try {
         Write-Stage -Group Build -Message "Generating XSLT for group '$suggestedGroup'."
-        $output = & $CreateXsltScriptPath -InfoPathXmlPath $sampleSourceFilePath -OutputName $outputName -OutputDirectory $TemplateOutputDirectory -UseDisplayName $UseDisplayName 2>&1
+        $output = & $CreateXsltScriptPath -InfoPathXmlPath $sampleSourceFilePath -OutputName $outputName -OutputDirectory $TemplateOutputDirectory -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath 2>&1
         
         # Extract actual file paths from script output
         $resultMatch = $output | Select-String -Pattern '##TEMPLATE_GENERATION_RESULT##(.+?)##END_RESULT##'

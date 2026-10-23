@@ -104,10 +104,11 @@ try {
             SourceDirectory = $source
             OutputRootDirectory = $output
         }
-        $dates = @('10/23/2026', '10/23/2026', '10/23/2026', '02/29/2024', '12/31/2025', '12/31/2025', '01/02/2026', '01/02/2026')
+        $dates = @('10/23/2026', '10/23/2026 00:30', '10/23/2026 23:45', '02/29/2024', '12/31/2025', '12/31/2025', '01/02/2026', '01/02/2026')
         if ($mode -eq 'Custom') {
             $parameters.DateFormat = 'dd/MM/yyyy'
-            $dates = @('23/10/2026', '23/10/2026', '23/10/2026', '29/02/2024', '31/12/2025', '31/12/2025', '02/01/2026', '02/01/2026')
+            $parameters.DateTimeFormat = 'dd/MM/yyyy HH:mm'
+            $dates = @('23/10/2026', '23/10/2026 00:30', '23/10/2026 23:45', '29/02/2024', '31/12/2025', '31/12/2025', '02/01/2026', '02/01/2026')
         }
         & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters
         Assert-HtmlValues -HtmlPath (Join-Path -Path $output -ChildPath 'Html\Sample.html') -ExpectedDates $dates
@@ -144,6 +145,7 @@ try {
         TemplateMappingCsvPath = Join-Path -Path $output -ChildPath 'Templates\InfoPathXsltGroupMap.csv'
         OutputDirectory = $htmlOutput
         DateFormat = 'yyyy-MM-dd HH:mm:ss zzz'
+        DateTimeFormat = 'yyyy-MM-dd HH:mm:ss zzz'
     }
     & (Join-Path -Path $repoRoot -ChildPath 'ProcessInfopathToHTML.ps1') @htmlParameters
     Assert-HtmlValues -HtmlPath (Join-Path -Path $htmlOutput -ChildPath 'Sample.html') -ExpectedDates @('2026-10-23 00:30:45 +14:00', '2026-10-23 23:45:00 +00:00')

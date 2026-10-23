@@ -46,10 +46,18 @@
 	Default: $true.
 
 .PARAMETER DateFormat
-	.NET date/time format for ISO date and date/time field values displayed in HTML.
+	.NET format for ISO date-only field values displayed in HTML.
 	Formatting uses invariant culture and preserves the source date/time offset.
 	Only the in-memory rendering document changes; source XML, CSVs, and metadata
 	are unchanged. Default: MM/dd/yyyy.
+
+.PARAMETER DateTimeFormat
+	.NET format for ISO date/time values. Default: MM/dd/yyyy HH:mm.
+	Stored clock times and offsets are retained without local-time conversion.
+
+.PARAMETER FieldRulesPath
+	Optional JSON field definitions and stored/display mappings for HTML only.
+	Use the same definitions when building templates.
 
 .EXAMPLE
 	.\ProcessInfopathToHTML.ps1 `
@@ -116,11 +124,22 @@ param(
 		$null = [datetime]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
 		return $true
 	})]
-	[string]$DateFormat = "MM/dd/yyyy"
+	[string]$DateFormat = "MM/dd/yyyy",
+
+	[ValidateNotNullOrEmpty()]
+	[ValidateScript({
+		$null = [datetimeoffset]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
+		return $true
+	})]
+	[string]$DateTimeFormat = "MM/dd/yyyy HH:mm",
+
+	[string]$FieldRulesPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+$fieldRules = Import-HtmlFieldRules -Path $FieldRulesPath
 
 function Write-Stage {
 	param(
@@ -229,6 +248,79 @@ function Find-PdfBrowser {
 	}
 
 	return $null
+}
+
+function Convert-HtmlToPdf {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string]$BrowserPath,
+
+		[Parameter(Mandatory = $true)]
+		[string]$HtmlPath,
+
+		[Parameter(Mandatory = $true)]
+		[string]$PdfPath
+	)
+
+	$temporaryDirectory = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("InfoPath PDF-" + [guid]::NewGuid().ToString('N'))
+	$profileDirectory = Join-Path -Path $temporaryDirectory -ChildPath 'Browser Profile'
+	$temporaryPdfPath = Join-Path -Path $temporaryDirectory -ChildPath 'Rendered Form.pdf'
+	$process = $null
+
+	try {
+		New-Item -Path $profileDirectory -ItemType Directory -Force | Out-Null
+		$htmlUri = [System.Uri]::new([System.IO.Path]::GetFullPath($HtmlPath)).AbsoluteUri
+		# Start-Process joins ArgumentList into a command line, so quote path values explicitly.
+		$arguments = @(
+			'--headless',
+			'--disable-gpu',
+			'--no-first-run',
+			'--no-default-browser-check',
+			'--disable-extensions',
+			'--no-pdf-header-footer',
+			"--user-data-dir=`"$profileDirectory`"",
+			"--print-to-pdf=`"$temporaryPdfPath`"",
+			"`"$htmlUri`""
+		)
+
+		$process = Start-Process -FilePath $BrowserPath -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+		if ($process.ExitCode -ne 0) {
+			throw "PDF generation failed for '$HtmlPath': browser exited with code $($process.ExitCode)."
+		}
+		if (-not (Test-Path -LiteralPath $temporaryPdfPath -PathType Leaf)) {
+			throw "PDF generation failed for '$HtmlPath': browser did not create a PDF."
+		}
+
+		$stream = [System.IO.File]::OpenRead($temporaryPdfPath)
+		try {
+			if ($stream.Length -lt 10) {
+				throw "PDF generation failed for '$HtmlPath': generated PDF is empty or truncated."
+			}
+			$header = New-Object byte[] 5
+			$null = $stream.Read($header, 0, $header.Length)
+			$tail = New-Object byte[] ([int][Math]::Min(1024, $stream.Length))
+			$null = $stream.Seek(-$tail.Length, [System.IO.SeekOrigin]::End)
+			$null = $stream.Read($tail, 0, $tail.Length)
+			if ([System.Text.Encoding]::ASCII.GetString($header) -ne '%PDF-' -or
+				-not [System.Text.Encoding]::ASCII.GetString($tail).Contains('%%EOF')) {
+				throw "PDF generation failed for '$HtmlPath': generated file has an invalid PDF signature or missing end marker."
+			}
+		}
+		finally {
+			$stream.Dispose()
+		}
+
+		# Publish only the new validated PDF; an older destination cannot count as success.
+		Move-Item -LiteralPath $temporaryPdfPath -Destination $PdfPath -Force
+	}
+	finally {
+		if ($null -ne $process) {
+			$process.Dispose()
+		}
+		if (Test-Path -LiteralPath $temporaryDirectory -PathType Container) {
+			Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+		}
+	}
 }
 
 function New-MetadataIndex {
@@ -583,6 +675,10 @@ function Expand-EmbeddedAttachments {
 		[string]$RelativePrefix
 	)
 
+	if (Test-HtmlFormattingNode -Node $Node) {
+		return 0
+	}
+
 	$extractedCount = 0
 
 	$children = Get-NodeChildElements -Node $Node
@@ -604,54 +700,34 @@ function Expand-EmbeddedAttachments {
 
 	$nameCounts = @{}
 	foreach ($child in $children) {
-		if ($nameCounts.ContainsKey($child.Name)) {
-			$nameCounts[$child.Name]++
+		$childName = $child.get_Name()
+		if ($nameCounts.ContainsKey($childName)) {
+			$nameCounts[$childName]++
 		}
 		else {
-			$nameCounts[$child.Name] = 1
+			$nameCounts[$childName] = 1
 		}
 	}
 
 	$nameIndexes = @{}
 	foreach ($child in $children) {
-		if ($nameIndexes.ContainsKey($child.Name)) {
-			$nameIndexes[$child.Name]++
+		$childName = $child.get_Name()
+		if ($nameIndexes.ContainsKey($childName)) {
+			$nameIndexes[$childName]++
 		}
 		else {
-			$nameIndexes[$child.Name] = 1
+			$nameIndexes[$childName] = 1
 		}
 
-		$childPath = "$CurrentPath/$($child.Name)"
-		if ($nameCounts[$child.Name] -gt 1) {
-			$childPath = "$childPath[$($nameIndexes[$child.Name])]"
+		$childPath = "$CurrentPath/$childName"
+		if ($nameCounts[$childName] -gt 1) {
+			$childPath = "$childPath[$($nameIndexes[$childName])]"
 		}
 
 		$extractedCount += Expand-EmbeddedAttachments -Node $child -CurrentPath $childPath -AttachmentOutputDirectory $AttachmentOutputDirectory -RelativePrefix $RelativePrefix
 	}
 
 	return $extractedCount
-}
-
-function Format-HtmlDateValues {
-	param(
-		[Parameter(Mandatory = $true)]
-		[System.Xml.XmlDocument]$Document,
-
-		[Parameter(Mandatory = $true)]
-		[string]$Format
-	)
-
-	foreach ($node in $Document.SelectNodes('//*[not(*)]')) {
-		$value = $node.InnerText.Trim()
-		if ($value -notmatch '^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,7})?)?(Z|[+-]\d{2}:\d{2})?$') {
-			continue
-		}
-
-		$date = [datetimeoffset]::MinValue
-		if ([datetimeoffset]::TryParse($value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$date)) {
-			$node.InnerText = $date.ToString($Format, [System.Globalization.CultureInfo]::InvariantCulture)
-		}
-	}
 }
 
 if (-not (Test-Path -LiteralPath $InfoPathDirectory -PathType Container)) {
@@ -665,6 +741,7 @@ Write-Stage -Group Input -Message "Grouping CSV: $GroupingCsvPath"
 Write-Stage -Group Input -Message "Template mapping CSV: $TemplateMappingCsvPath"
 Write-Stage -Group Input -Message "Output directory: $OutputDirectory"
 Write-Stage -Group Input -Message "HTML date format: $DateFormat"
+Write-Stage -Group Input -Message "HTML date/time format: $DateTimeFormat"
 
 if (-not (Test-Path -LiteralPath $MetadataCsvPath -PathType Leaf)) {
 	throw "MetadataCsvPath does not exist: $MetadataCsvPath"
@@ -844,10 +921,11 @@ foreach ($xmlFile in $xmlFiles) {
 		# Load into XmlDocument first so embedded attachment payloads can be decoded and replaced with file references.
 		$xmlSettings = [System.Xml.XmlReaderSettings]::new()
 		$xmlSettings.IgnoreComments = $true
-		$xmlSettings.IgnoreWhitespace = $true
+		$xmlSettings.IgnoreWhitespace = $false
 		$xmlSettings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
 		$xmlDocument = [System.Xml.XmlDocument]::new()
 		$xmlDocument.XmlResolver = $null
+		$xmlDocument.PreserveWhitespace = $true
 		$streamReader = [System.IO.StreamReader]::new($xmlFile.FullName, $true)
 		$rawXml = $streamReader.ReadToEnd()
 		$streamReader.Dispose()
@@ -862,14 +940,15 @@ foreach ($xmlFile in $xmlFiles) {
 
 		$attachmentCount = 0
 		if ($null -ne $xmlDocument.DocumentElement) {
-			$attachmentCount = Expand-EmbeddedAttachments -Node $xmlDocument.DocumentElement -CurrentPath $xmlDocument.DocumentElement.Name -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
+			$attachmentCount = Expand-EmbeddedAttachments -Node $xmlDocument.DocumentElement -CurrentPath $xmlDocument.DocumentElement.get_Name() -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
 		}
 
 		if ($attachmentCount -gt 0) {
 			Write-Stage -Group Resolve -Message "Extracted $attachmentCount embedded attachment(s) from '$($xmlFile.Name)'."
 		}
 
-		Format-HtmlDateValues -Document $xmlDocument -Format $DateFormat
+		Export-HtmlFieldAttachments -Document $xmlDocument -Configuration $fieldRules -SourceFileDirectory $xmlFile.DirectoryName -SourceRoot $InfoPathDirectory -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
+		Convert-HtmlFieldValues -Document $xmlDocument -Configuration $fieldRules -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat
 
 		$xmlNodeReader = [System.Xml.XmlNodeReader]::new($xmlDocument)
 		$writerSettings = $xslt.OutputSettings.Clone()
@@ -889,25 +968,9 @@ foreach ($xmlFile in $xmlFiles) {
 
 		if ($shouldPrintPdf) {
 			Write-Stage -Group Pdf -Message "Generating PDF '$pdfOutputPath'."
-			$htmlUri = [System.Uri]::new($htmlOutputPath).AbsoluteUri
-			$arguments = @(
-				"--headless",
-				"--disable-gpu",
-				"--print-to-pdf=$pdfOutputPath",
-				$htmlUri
-			)
-
-			$process = Start-Process -FilePath $pdfBrowser -ArgumentList $arguments -Wait -PassThru -NoNewWindow
-			if ($process.ExitCode -eq 0 -and (Test-Path -LiteralPath $pdfOutputPath -PathType Leaf)) {
-				$pdfCount++
-				Write-Stage -Group Pdf -Message "PDF created '$pdfOutputPath'."
-			}
-			else {
-				$failedCopyPath = Copy-FailedInfoPathFile -XmlFile $xmlFile -SourceRoot $InfoPathDirectory -FailureRoot $FailedFilesDirectory
-				$failedCount++
-				Write-ErrorLogEntry -ErrorLogEntries $errorLogEntries -SourceFile $xmlFile.FullName -Message "PDF generation failed. Copied to '$failedCopyPath'."
-				Write-Stage -Group Warn -Message "PDF generation failed for '$($xmlFile.FullName)'. Copied to '$failedCopyPath'."
-			}
+			Convert-HtmlToPdf -BrowserPath $pdfBrowser -HtmlPath $htmlOutputPath -PdfPath $pdfOutputPath
+			$pdfCount++
+			Write-Stage -Group Pdf -Message "PDF created '$pdfOutputPath'."
 		}
 	}
 	catch {

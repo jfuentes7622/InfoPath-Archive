@@ -6,6 +6,7 @@
 	Reads a single InfoPath XML file, inspects the document structure, and builds an
 	HTML-focused XSLT template plus a starter CSS file. Also writes a generation log file.
 	Boolean values are displayed as disabled checkboxes, including in repeating tables.
+	XHTML formatting is preserved as rich-text field content rather than form structure.
 
 .PARAMETER InfoPathXmlPath
 	Full path to the source InfoPath XML file used as the template sample.
@@ -27,6 +28,10 @@
 	Set to $false for exact internal XML names, including namespace prefixes.
 	Only visible labels change; XPath and CSS identifiers remain internal.
 	Default: $true.
+
+.PARAMETER FieldRulesPath
+	Optional JSON HTML field definitions, used to recognize structured display fields.
+	Supply the same file to ProcessInfopathToHTML.ps1 when rendering.
 
 .EXAMPLE
 	.\CreateXSLTfromInfopathFile.ps1 `
@@ -56,11 +61,15 @@ param(
 
 	[string]$OutputDirectory = (Get-Location).Path,
 
-	[bool]$UseDisplayName = $true
+	[bool]$UseDisplayName = $true,
+
+	[string]$FieldRulesPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+$fieldRules = Import-HtmlFieldRules -Path $FieldRulesPath
 
 function New-Indent {
 	param([int]$Level)
@@ -156,8 +165,14 @@ function Convert-ToXPathLiteral {
 function Get-ElementChildren {
 	param([System.Xml.XmlNode]$Node)
 
+	if ($Node -is [System.Xml.XmlElement] -and $Node.HasAttribute('kind', 'urn:infopath-archive:display')) {
+		return ,@()
+	}
+
 	# Return as a single array object so callers can always use .Count safely under StrictMode.
-	return ,@($Node.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })
+	return ,@($Node.ChildNodes | Where-Object {
+		$_.NodeType -eq [System.Xml.XmlNodeType]::Element -and -not (Test-HtmlFormattingNode -Node $_)
+	})
 }
 
 function Test-LeafNode {
@@ -172,11 +187,12 @@ function Get-RepeatedChildNames {
 
 	$counts = @{}
 	foreach ($child in (Get-ElementChildren -Node $Node)) {
-		if ($counts.ContainsKey($child.Name)) {
-			$counts[$child.Name]++
+		$childName = $child.get_Name()
+		if ($counts.ContainsKey($childName)) {
+			$counts[$childName]++
 		}
 		else {
-			$counts[$child.Name] = 1
+			$counts[$childName] = 1
 		}
 	}
 
@@ -197,7 +213,7 @@ function Get-FirstChildByName {
 	)
 
 	foreach ($child in (Get-ElementChildren -Node $Node)) {
-		if ($child.Name -eq $Name) {
+		if ($child.get_Name() -eq $Name) {
 			return $child
 		}
 	}
@@ -231,10 +247,21 @@ function Add-ValueRenderer {
 	)
 
 	Add-Line -Lines $Lines -IndentLevel $IndentLevel -Text "<xsl:choose>"
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text ('<xsl:when test="{0}/@archive:kind = ''link''">' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text ('<a><xsl:attribute name="href"><xsl:value-of select="{0}/@archive:href" /></xsl:attribute><xsl:value-of select="{0}" /></a>' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text '</xsl:when>'
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text ('<xsl:when test="{0}/@archive:kind = ''selections''">' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text ('<xsl:for-each select="{0}/archive:option"><label class="checkbox-selection"><input type="checkbox" disabled="disabled"><xsl:if test="@selected = ''true''"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if></input><xsl:text> </xsl:text><xsl:value-of select="." /></label></xsl:for-each>' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text '</xsl:when>'
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text ('<xsl:when test="{0}/@archive:kind = ''text''"><span class="plain-text"><xsl:value-of select="{0}" /></span></xsl:when>' -f $SelectExpression)
+	$formattingXPath = Get-HtmlFormattingXPath
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text ('<xsl:when test="{0}/@archive:kind = ''rich-text'' or {0}/*[{1}]">' -f $SelectExpression, $formattingXPath)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text ('<xsl:apply-templates select="{0}/node()" mode="rich-text" />' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:when>"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text ('<xsl:when test="starts-with({0}, ''ATTACHMENT::'')">' -f $SelectExpression)
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<a target="_blank">'
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text ('<xsl:attribute name="href"><xsl:value-of select="substring-after({0}, ''ATTACHMENT::'')" /></xsl:attribute>' -f $SelectExpression)
-	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text ('<xsl:value-of select="substring-after({0}, ''ATTACHMENT::'')" />' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text ('<xsl:call-template name="file-name"><xsl:with-param name="path" select="translate(substring-after({0}, ''ATTACHMENT::''), ''\'', ''/'')" /></xsl:call-template>' -f $SelectExpression)
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '</a>'
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:when>"
 	$booleanValue = "translate(normalize-space($SelectExpression), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
@@ -247,7 +274,7 @@ function Add-ValueRenderer {
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '</input>'
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:when>"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<xsl:otherwise>"
-	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text ('<xsl:value-of select="{0}" />' -f $SelectExpression)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text ('<span class="plain-text"><xsl:value-of select="{0}" /></span>' -f $SelectExpression)
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:otherwise>"
 	Add-Line -Lines $Lines -IndentLevel $IndentLevel -Text "</xsl:choose>"
 }
@@ -268,21 +295,23 @@ function Add-ElementPanel {
 		[int]$IndentLevel
 	)
 
-	Write-Stage -Group Build -Message ("Rendering element '{0}' at XPath '{1}'" -f $Node.Name, $CurrentXPath)
+	# The XML adapter can shadow .Name when a record contains a field named Name.
+	$nodeName = $Node.get_Name()
+	Write-Stage -Group Build -Message ("Rendering element '{0}' at XPath '{1}'" -f $nodeName, $CurrentXPath)
 
-	$safeClass = Convert-ToSafeClassName -Name $Node.Name
-	$humanLabel = Convert-ToFieldLabel -ElementName $Node.Name
+	$safeClass = Convert-ToSafeClassName -Name $nodeName
+	$humanLabel = Convert-ToFieldLabel -ElementName $nodeName
 	Add-Line -Lines $Lines -IndentLevel $IndentLevel -Text "<div class=`"section section-$safeClass`">"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"section-title`">$humanLabel</div>"
 
 	$children = Get-ElementChildren -Node $Node
 	if ($children.Count -eq 0) {
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"field-row`">"
-		$humanLabel = Convert-ToFieldLabel -ElementName $Node.Name
+		$humanLabel = Convert-ToFieldLabel -ElementName $nodeName
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<span class=`"field-label`">$humanLabel</span>"
-		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<span class="field-value">'
+		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<div class="field-value">'
 		Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 3) -SelectExpression $CurrentXPath
-		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "</span>"
+		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "</div>"
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</div>"
 		Add-Line -Lines $Lines -IndentLevel $IndentLevel -Text "</div>"
 		return
@@ -292,26 +321,27 @@ function Add-ElementPanel {
 	$renderedRepeated = @{}
 
 	foreach ($child in $children) {
-		$childXPathPart = Convert-ToXPathLiteral -Name $child.Name
+		$childName = $child.get_Name()
+		$childXPathPart = Convert-ToXPathLiteral -Name $childName
 		$childXPath = "$CurrentXPath/$childXPathPart"
 
-		if ($repeatedNames.ContainsKey($child.Name)) {
-			if ($renderedRepeated.ContainsKey($child.Name)) {
+		if ($repeatedNames.ContainsKey($childName)) {
+			if ($renderedRepeated.ContainsKey($childName)) {
 				continue
 			}
 
-			$renderedRepeated[$child.Name] = $true
-			$sampleNode = Get-FirstChildByName -Node $Node -Name $child.Name
+			$renderedRepeated[$childName] = $true
+			$sampleNode = Get-FirstChildByName -Node $Node -Name $childName
 
 			if ($null -eq $sampleNode) {
-				Write-Stage -Group Warn -Message ("Skipping repeated node '{0}' under '{1}' because no representative sample was found." -f $child.Name, $Node.Name)
-				Write-LogEntry -LogEntries $LogEntries -Message "Unable to find representative sample for repeated node '$($child.Name)' under '$($Node.Name)'."
+				Write-Stage -Group Warn -Message ("Skipping repeated node '{0}' under '{1}' because no representative sample was found." -f $childName, $nodeName)
+				Write-LogEntry -LogEntries $LogEntries -Message "Unable to find representative sample for repeated node '$childName' under '$nodeName'."
 				continue
 			}
 
 			$sampleChildren = Get-ElementChildren -Node $sampleNode
-			$humanLabel = Convert-ToFieldLabel -ElementName $child.Name
-			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"collection collection-$(Convert-ToSafeClassName -Name $child.Name)`">"
+			$humanLabel = Convert-ToFieldLabel -ElementName $childName
+			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"collection collection-$(Convert-ToSafeClassName -Name $childName)`">"
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<div class=`"collection-title`">$humanLabel</div>"
 
 			if ($sampleChildren.Count -eq 0) {
@@ -332,7 +362,7 @@ function Add-ElementPanel {
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 4) -Text "<tr>"
 
 				foreach ($headerNode in $sampleChildren) {
-					$headerLabel = Convert-ToFieldLabel -ElementName $headerNode.Name
+					$headerLabel = Convert-ToFieldLabel -ElementName $headerNode.get_Name()
 					Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text "<th>$headerLabel</th>"
 				}
 
@@ -343,9 +373,14 @@ function Add-ElementPanel {
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text "<tr>"
 
 				foreach ($valueNode in $sampleChildren) {
-					$valuePath = Convert-ToXPathLiteral -Name $valueNode.Name
+					$valuePath = Convert-ToXPathLiteral -Name $valueNode.get_Name()
 					Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 6) -Text "<td>"
-					Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 7) -SelectExpression $valuePath
+					if (Test-LeafNode -Node $valueNode) {
+						Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 7) -SelectExpression $valuePath
+					}
+					else {
+						Add-ElementPanel -Node $valueNode -CurrentXPath $valuePath -Lines $Lines -LogEntries $LogEntries -IndentLevel ($IndentLevel + 7)
+					}
 					Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 6) -Text "</td>"
 				}
 
@@ -354,13 +389,6 @@ function Add-ElementPanel {
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text "</tbody>"
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "</table>"
 
-				foreach ($nestedCandidate in $sampleChildren) {
-					if (-not (Test-LeafNode -Node $nestedCandidate)) {
-						Write-Stage -Group Warn -Message ("Nested structure '{0}/{1}' rendered as table text; consider manual refinement." -f $child.Name, $nestedCandidate.Name)
-						Write-LogEntry -LogEntries $LogEntries -Message "Nested complex structure '$($child.Name)/$($nestedCandidate.Name)' rendered as table cell text. Consider manual refinement."
-						Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<!-- TODO: Nested structure '$($child.Name)/$($nestedCandidate.Name)' may need custom rendering. -->"
-					}
-				}
 			}
 
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</div>"
@@ -369,11 +397,11 @@ function Add-ElementPanel {
 
 		if (Test-LeafNode -Node $child) {
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"field-row`">"
-			$childLabel = Convert-ToFieldLabel -ElementName $child.Name
+			$childLabel = Convert-ToFieldLabel -ElementName $childName
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<span class=`"field-label`">$childLabel</span>"
-			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<span class="field-value">'
+			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<div class="field-value">'
 			Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 3) -SelectExpression $childXPath
-			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "</span>"
+			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "</div>"
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</div>"
 		}
 		else {
@@ -405,9 +433,10 @@ $streamReader.Dispose()
 
 $xmlDocument = [System.Xml.XmlDocument]::new()
 $xmlDocument.XmlResolver = $null
+$xmlDocument.PreserveWhitespace = $true
 $xmlSettings = [System.Xml.XmlReaderSettings]::new()
 $xmlSettings.IgnoreComments = $true
-$xmlSettings.IgnoreWhitespace = $true
+$xmlSettings.IgnoreWhitespace = $false
 $xmlSettings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
 $xmlReader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($rawXml), $xmlSettings)
 try {
@@ -420,6 +449,7 @@ finally {
 if ($null -eq $xmlDocument.DocumentElement) {
 	throw "The XML file does not contain a document element: $InfoPathXmlPath"
 }
+Convert-HtmlFieldValues -Document $xmlDocument -Configuration $fieldRules
 
 $baseOutputName = [System.IO.Path]::GetFileName($OutputName)
 if ([string]::IsNullOrWhiteSpace($baseOutputName)) {
@@ -441,16 +471,51 @@ Write-Stage -Group Build -Message "Preparing XSLT template structure."
 
 $xsltLines = New-Object System.Collections.Generic.List[string]
 $cssRelativePath = [System.IO.Path]::GetFileName($cssPath)
-$rootName = $xmlDocument.DocumentElement.Name
+$rootName = $xmlDocument.DocumentElement.get_Name()
 $rootXPath = Convert-ToXPathLiteral -Name $rootName
 Write-Stage -Group Build -Message "Detected root element: $rootName"
 
 Add-Line -Lines $xsltLines -IndentLevel 0 -Text "<?xml version=`"1.0`" encoding=`"utf-8`"?>"
-Add-Line -Lines $xsltLines -IndentLevel 0 -Text '<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" exclude-result-prefixes="xsi">'
+Add-Line -Lines $xsltLines -IndentLevel 0 -Text '<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:archive="urn:infopath-archive:display" exclude-result-prefixes="xsi archive">'
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:output method=`"html`" indent=`"yes`" encoding=`"utf-8`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:param name=`"sourceFilePath`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:param name=`"sourceFileName`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text ('<xsl:param name="UseDisplayName" select="{0}()" />' -f $UseDisplayName.ToString().ToLowerInvariant())
+$richTextTemplates = @'
+<xsl:template name="file-name">
+  <xsl:param name="path" />
+  <xsl:choose>
+    <xsl:when test="contains($path, '/')"><xsl:call-template name="file-name"><xsl:with-param name="path" select="substring-after($path, '/')" /></xsl:call-template></xsl:when>
+    <xsl:otherwise><xsl:value-of select="$path" /></xsl:otherwise>
+  </xsl:choose>
+</xsl:template>
+<xsl:template match="text()" mode="rich-text"><xsl:value-of select="." /></xsl:template>
+<xsl:template match="*" mode="rich-text">
+  <xsl:variable name="tag" select="translate(local-name(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')" />
+  <xsl:choose>
+    <xsl:when test="contains('|script|style|iframe|object|embed|', concat('|', $tag, '|'))" />
+    <xsl:when test="namespace-uri() = 'http://www.w3.org/1999/xhtml' or namespace-uri() = ''">
+      <xsl:choose>
+        <xsl:when test="contains('|a|abbr|acronym|address|article|aside|b|bdi|bdo|big|blockquote|br|caption|center|cite|code|col|colgroup|dd|del|details|dfn|div|dl|dt|em|figcaption|figure|font|footer|h1|h2|h3|h4|h5|h6|header|hr|i|img|ins|kbd|li|main|mark|nav|ol|p|pre|q|s|samp|section|small|span|strike|strong|sub|summary|sup|table|tbody|td|tfoot|th|thead|time|tr|tt|u|ul|var|wbr|', concat('|', $tag, '|'))">
+          <xsl:element name="{$tag}">
+            <xsl:copy-of select="@*[namespace-uri() = '' and contains('|style|class|title|lang|dir|align|valign|width|height|colspan|rowspan|border|cellpadding|cellspacing|face|color|size|alt|start|type|', concat('|', local-name(), '|'))]" />
+            <xsl:for-each select="@href[parent::*[local-name() = 'a']] | @src[parent::*[local-name() = 'img']]">
+              <xsl:variable name="url" select="translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ &#x9;&#xA;&#xD;', 'abcdefghijklmnopqrstuvwxyz')" />
+              <xsl:if test="not(contains($url, ':')) or starts-with($url, 'http:') or starts-with($url, 'https:') or (local-name() = 'href' and (starts-with($url, 'mailto:') or starts-with($url, 'tel:'))) or (local-name() = 'src' and (starts-with($url, 'data:image/png;') or starts-with($url, 'data:image/jpeg;') or starts-with($url, 'data:image/gif;') or starts-with($url, 'data:image/webp;')))">
+                <xsl:copy />
+              </xsl:if>
+            </xsl:for-each>
+            <xsl:apply-templates select="node()" mode="rich-text" />
+          </xsl:element>
+        </xsl:when>
+        <xsl:otherwise><xsl:apply-templates select="node()" mode="rich-text" /></xsl:otherwise>
+      </xsl:choose>
+    </xsl:when>
+    <xsl:otherwise><xsl:apply-templates select="node()" mode="rich-text" /></xsl:otherwise>
+  </xsl:choose>
+</xsl:template>
+'@
+Add-Line -Lines $xsltLines -IndentLevel 1 -Text $richTextTemplates
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:template match=`"/`">"
 Add-Line -Lines $xsltLines -IndentLevel 2 -Text "<html>"
 Add-Line -Lines $xsltLines -IndentLevel 3 -Text "<head>"
@@ -540,6 +605,15 @@ body {
 
 .field-value {
   word-break: break-word;
+}
+
+.plain-text {
+  white-space: pre-wrap;
+}
+
+.checkbox-selection {
+  display: inline-block;
+  margin-right: 12px;
 }
 
 .collection {
