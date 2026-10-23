@@ -34,6 +34,14 @@
     Accepted values: yes, no, true, false, 1, 0.
     Default: false
 
+.PARAMETER UseDisplayName
+    Use readable labels derived from XML names in HTML. Set to $false for exact
+    internal XML names. Structural identifiers are unchanged. Default: $true.
+
+.PARAMETER DateFormat
+    .NET date/time format for date values displayed in HTML (and printed PDFs).
+    Does not change source XML, normalized CSVs, or metadata. Default: MM/dd/yyyy.
+
 .EXAMPLE
     .\RunInfoPathPipeline.ps1 `
       -SourceDirectory "C:\Data\InfoPath" `
@@ -62,7 +70,16 @@ param(
     [ValidateRange(1, 100)]
     [int]$MaxFilesToAnalyze = 5,
 
-    [string]$PrintToPdf = "false"
+    [string]$PrintToPdf = "false",
+
+    [bool]$UseDisplayName = $true,
+
+    [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        $null = [datetime]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
+        return $true
+    })]
+    [string]$DateFormat = "MM/dd/yyyy"
 )
 
 Set-StrictMode -Version Latest
@@ -163,10 +180,10 @@ try {
     & $groupingScript -InputCsvPath $versionCsvPath -OutputCsvPath $groupingDetailedPath -SummaryCsvPath $groupingSummaryPath
 
     Write-Stage -Group Run -Message "Step 5/6: Build XSLT templates per group"
-    & $buildXsltScript -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath
+    & $buildXsltScript -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName
 
     Write-Stage -Group Run -Message "Step 6/6: Transform InfoPath XML to HTML"
-    & $htmlScript -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent
+    & $htmlScript -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat
 
     $duration = (Get-Date) - $startTime
     Write-Stage -Group Done -Message "Pipeline completed successfully in $($duration.ToString())."

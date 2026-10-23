@@ -40,6 +40,17 @@
 .PARAMETER Recurse
 	Include subfolders when discovering XML files to process.
 
+.PARAMETER UseDisplayName
+	Use readable labels derived from XML names in HTML. Set to $false for exact
+	internal XML names. Requires templates generated with label-mode support.
+	Default: $true.
+
+.PARAMETER DateFormat
+	.NET date/time format for ISO date and date/time field values displayed in HTML.
+	Formatting uses invariant culture and preserves the source date/time offset.
+	Only the in-memory rendering document changes; source XML, CSVs, and metadata
+	are unchanged. Default: MM/dd/yyyy.
+
 .EXAMPLE
 	.\ProcessInfopathToHTML.ps1 `
 	  -InfoPathDirectory "C:\Temp\RedApps" `
@@ -96,7 +107,16 @@ param(
 	[Parameter()]
 	[string]$FailedFilesDirectory,
 
-	[switch]$Recurse
+	[switch]$Recurse,
+
+	[bool]$UseDisplayName = $true,
+
+	[ValidateNotNullOrEmpty()]
+	[ValidateScript({
+		$null = [datetime]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
+		return $true
+	})]
+	[string]$DateFormat = "MM/dd/yyyy"
 )
 
 Set-StrictMode -Version Latest
@@ -612,6 +632,28 @@ function Expand-EmbeddedAttachments {
 	return $extractedCount
 }
 
+function Format-HtmlDateValues {
+	param(
+		[Parameter(Mandatory = $true)]
+		[System.Xml.XmlDocument]$Document,
+
+		[Parameter(Mandatory = $true)]
+		[string]$Format
+	)
+
+	foreach ($node in $Document.SelectNodes('//*[not(*)]')) {
+		$value = $node.InnerText.Trim()
+		if ($value -notmatch '^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,7})?)?(Z|[+-]\d{2}:\d{2})?$') {
+			continue
+		}
+
+		$date = [datetimeoffset]::MinValue
+		if ([datetimeoffset]::TryParse($value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$date)) {
+			$node.InnerText = $date.ToString($Format, [System.Globalization.CultureInfo]::InvariantCulture)
+		}
+	}
+}
+
 if (-not (Test-Path -LiteralPath $InfoPathDirectory -PathType Container)) {
 	throw "InfoPathDirectory does not exist or is not a folder: $InfoPathDirectory"
 }
@@ -622,6 +664,7 @@ Write-Stage -Group Input -Message "Metadata CSV: $MetadataCsvPath"
 Write-Stage -Group Input -Message "Grouping CSV: $GroupingCsvPath"
 Write-Stage -Group Input -Message "Template mapping CSV: $TemplateMappingCsvPath"
 Write-Stage -Group Input -Message "Output directory: $OutputDirectory"
+Write-Stage -Group Input -Message "HTML date format: $DateFormat"
 
 if (-not (Test-Path -LiteralPath $MetadataCsvPath -PathType Leaf)) {
 	throw "MetadataCsvPath does not exist: $MetadataCsvPath"
@@ -780,6 +823,7 @@ foreach ($xmlFile in $xmlFiles) {
 		$xsltArgs.AddParam("sourceFilePath", "", $xmlFile.FullName)
 		$xsltArgs.AddParam("sourceFileName", "", $xmlFile.Name)
 		$xsltArgs.AddParam("templateGroup", "", $suggestedGroup)
+		$xsltArgs.AddParam("UseDisplayName", "", $UseDisplayName)
 
 		if ($null -ne $metadataRow) {
 			foreach ($property in $metadataRow.PSObject.Properties) {
@@ -824,6 +868,8 @@ foreach ($xmlFile in $xmlFiles) {
 		if ($attachmentCount -gt 0) {
 			Write-Stage -Group Resolve -Message "Extracted $attachmentCount embedded attachment(s) from '$($xmlFile.Name)'."
 		}
+
+		Format-HtmlDateValues -Document $xmlDocument -Format $DateFormat
 
 		$xmlNodeReader = [System.Xml.XmlNodeReader]::new($xmlDocument)
 		$writerSettings = $xslt.OutputSettings.Clone()

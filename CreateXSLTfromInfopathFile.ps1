@@ -5,6 +5,7 @@
 .DESCRIPTION
 	Reads a single InfoPath XML file, inspects the document structure, and builds an
 	HTML-focused XSLT template plus a starter CSS file. Also writes a generation log file.
+	Boolean values are displayed as disabled checkboxes, including in repeating tables.
 
 .PARAMETER InfoPathXmlPath
 	Full path to the source InfoPath XML file used as the template sample.
@@ -20,6 +21,12 @@
 .PARAMETER OutputDirectory
 	Destination folder for generated files.
 	Default: current working directory.
+
+.PARAMETER UseDisplayName
+	Use readable labels derived from XML names by default in the generated XSLT.
+	Set to $false for exact internal XML names, including namespace prefixes.
+	Only visible labels change; XPath and CSS identifiers remain internal.
+	Default: $true.
 
 .EXAMPLE
 	.\CreateXSLTfromInfopathFile.ps1 `
@@ -47,7 +54,9 @@ param(
 	[ValidateNotNullOrEmpty()]
 	[string]$OutputName,
 
-	[string]$OutputDirectory = (Get-Location).Path
+	[string]$OutputDirectory = (Get-Location).Path,
+
+	[bool]$UseDisplayName = $true
 )
 
 Set-StrictMode -Version Latest
@@ -121,6 +130,17 @@ function Convert-ToHumanReadableLabel {
 	
 	# Return the result (already properly capitalized by camelCase)
 	return $label
+}
+
+function Convert-ToFieldLabel {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string]$ElementName
+	)
+
+	$displayLabel = [System.Security.SecurityElement]::Escape((Convert-ToHumanReadableLabel -ElementName $ElementName))
+	$internalLabel = [System.Security.SecurityElement]::Escape($ElementName)
+	return '<xsl:choose><xsl:when test="$UseDisplayName"><xsl:text>{0}</xsl:text></xsl:when><xsl:otherwise><xsl:text>{1}</xsl:text></xsl:otherwise></xsl:choose>' -f $displayLabel, $internalLabel
 }
 
 function Convert-ToXPathLiteral {
@@ -217,6 +237,15 @@ function Add-ValueRenderer {
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text ('<xsl:value-of select="substring-after({0}, ''ATTACHMENT::'')" />' -f $SelectExpression)
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '</a>'
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:when>"
+	$booleanValue = "translate(normalize-space($SelectExpression), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+	$booleanType = "$SelectExpression/@xsi:type = 'boolean' or substring-after($SelectExpression/@xsi:type, ':') = 'boolean'"
+	$booleanTest = "not($SelectExpression/*) and not($SelectExpression/@xsi:nil = 'true' or $SelectExpression/@xsi:nil = '1') and ($booleanValue = 'true' or $booleanValue = 'false' or (($booleanType) and ($booleanValue = '1' or $booleanValue = '0')))"
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text ('<xsl:when test="{0}">' -f $booleanTest)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<input type="checkbox" disabled="disabled">'
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text ('<xsl:if test="{0} = ''true'' or {0} = ''1''"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if>' -f $booleanValue)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text ('<xsl:attribute name="aria-label"><xsl:choose><xsl:when test="{0} = ''true'' or {0} = ''1''">True</xsl:when><xsl:otherwise>False</xsl:otherwise></xsl:choose></xsl:attribute>' -f $booleanValue)
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '</input>'
+	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:when>"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<xsl:otherwise>"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text ('<xsl:value-of select="{0}" />' -f $SelectExpression)
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "</xsl:otherwise>"
@@ -242,14 +271,14 @@ function Add-ElementPanel {
 	Write-Stage -Group Build -Message ("Rendering element '{0}' at XPath '{1}'" -f $Node.Name, $CurrentXPath)
 
 	$safeClass = Convert-ToSafeClassName -Name $Node.Name
-	$humanLabel = Convert-ToHumanReadableLabel -ElementName $Node.Name
+	$humanLabel = Convert-ToFieldLabel -ElementName $Node.Name
 	Add-Line -Lines $Lines -IndentLevel $IndentLevel -Text "<div class=`"section section-$safeClass`">"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"section-title`">$humanLabel</div>"
 
 	$children = Get-ElementChildren -Node $Node
 	if ($children.Count -eq 0) {
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"field-row`">"
-		$humanLabel = Convert-ToHumanReadableLabel -ElementName $Node.Name
+		$humanLabel = Convert-ToFieldLabel -ElementName $Node.Name
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<span class=`"field-label`">$humanLabel</span>"
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<span class="field-value">'
 		Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 3) -SelectExpression $CurrentXPath
@@ -281,7 +310,7 @@ function Add-ElementPanel {
 			}
 
 			$sampleChildren = Get-ElementChildren -Node $sampleNode
-			$humanLabel = Convert-ToHumanReadableLabel -ElementName $child.Name
+			$humanLabel = Convert-ToFieldLabel -ElementName $child.Name
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"collection collection-$(Convert-ToSafeClassName -Name $child.Name)`">"
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<div class=`"collection-title`">$humanLabel</div>"
 
@@ -290,7 +319,9 @@ function Add-ElementPanel {
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text "<thead><tr><th>Value</th></tr></thead>"
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text "<tbody>"
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 4) -Text ('<xsl:for-each select="{0}">' -f $childXPath)
-				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text '<tr><td><xsl:value-of select="." /></td></tr>'
+				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text '<tr><td>'
+				Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 6) -SelectExpression '.'
+				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text '</td></tr>'
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 4) -Text "</xsl:for-each>"
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 3) -Text "</tbody>"
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "</table>"
@@ -301,7 +332,7 @@ function Add-ElementPanel {
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 4) -Text "<tr>"
 
 				foreach ($headerNode in $sampleChildren) {
-					$headerLabel = Convert-ToHumanReadableLabel -ElementName $headerNode.Name
+					$headerLabel = Convert-ToFieldLabel -ElementName $headerNode.Name
 					Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text "<th>$headerLabel</th>"
 				}
 
@@ -338,7 +369,7 @@ function Add-ElementPanel {
 
 		if (Test-LeafNode -Node $child) {
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"field-row`">"
-			$childLabel = Convert-ToHumanReadableLabel -ElementName $child.Name
+			$childLabel = Convert-ToFieldLabel -ElementName $child.Name
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<span class=`"field-label`">$childLabel</span>"
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<span class="field-value">'
 			Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 3) -SelectExpression $childXPath
@@ -415,10 +446,11 @@ $rootXPath = Convert-ToXPathLiteral -Name $rootName
 Write-Stage -Group Build -Message "Detected root element: $rootName"
 
 Add-Line -Lines $xsltLines -IndentLevel 0 -Text "<?xml version=`"1.0`" encoding=`"utf-8`"?>"
-Add-Line -Lines $xsltLines -IndentLevel 0 -Text "<xsl:stylesheet version=`"1.0`" xmlns:xsl=`"http://www.w3.org/1999/XSL/Transform`">"
+Add-Line -Lines $xsltLines -IndentLevel 0 -Text '<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" exclude-result-prefixes="xsi">'
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:output method=`"html`" indent=`"yes`" encoding=`"utf-8`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:param name=`"sourceFilePath`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:param name=`"sourceFileName`" />"
+Add-Line -Lines $xsltLines -IndentLevel 1 -Text ('<xsl:param name="UseDisplayName" select="{0}()" />' -f $UseDisplayName.ToString().ToLowerInvariant())
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:template match=`"/`">"
 Add-Line -Lines $xsltLines -IndentLevel 2 -Text "<html>"
 Add-Line -Lines $xsltLines -IndentLevel 3 -Text "<head>"
@@ -556,4 +588,3 @@ $result = @{
 
 # Write result as a special marker line for caller to parse
 Write-Host "##TEMPLATE_GENERATION_RESULT##$(ConvertTo-Json -InputObject $result -Compress)##END_RESULT##" -ForegroundColor Magenta
-
