@@ -6,6 +6,7 @@ function Convert-ToHumanReadableLabel {
 
 	# Remove namespace prefixes (my:, d:, etc.)
 	$label = $ElementName -replace '^[a-z]+:', ''
+	$label = $label.Replace('_', ' ')
 	
 	# Insert space before uppercase that follows lowercase: "RequestorType" → "Requestor Type"
 	$label = $label -replace '(?<=[a-z])(?=[A-Z])', ' '
@@ -27,7 +28,10 @@ Write-Host "Testing label conversion:"
 	"HTTPResponse",
 	"my:FugitivePersonalInformation",
 	"RedNoticeApplication",
-	"my:RedNoticeApplication"
+	"my:RedNoticeApplication",
+	"my:Requestor_Type",
+	"my:request_status",
+	"my:HTTP_ResponseCode"
 ) | ForEach-Object {
 	$result = Convert-ToHumanReadableLabel -ElementName $_
 	Write-Host "  '$_' => '$result'"

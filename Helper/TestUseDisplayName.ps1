@@ -18,10 +18,10 @@ function Assert-Labels {
 
     $html = Get-Content -LiteralPath $HtmlPath -Raw
     $expected = if ($DisplayNames) {
-        @('Form Data', 'Requestor Type', 'Contact Details', 'HTTP Response', 'Person Record', 'First Name', 'Alias Name')
+        @('Form Data', 'Requestor Type', 'Contact Details', 'HTTP Response', 'Person Record', 'First Name', 'Alias Name', 'request status', 'HTTP Response Code')
     }
     else {
-        @('my:FormData', 'my:RequestorType', 'my:ContactDetails', 'my:HTTPResponse', 'my:PersonRecord', 'my:FirstName', 'my:AliasName')
+        @('my:FormData', 'my:RequestorType', 'my:Contact_Details', 'my:HTTPResponse', 'my:Person_Record', 'my:First_Name', 'my:Alias_Name', 'my:request_status', 'my:HTTP_ResponseCode')
     }
     $labels = @([regex]::Matches($html, '<(?:div|span) class="(?:section-title|collection-title|field-label)">([^<]*)</(?:div|span)>|<th>([^<]*)</th>') | ForEach-Object {
         $_.Groups[1].Value + $_.Groups[2].Value
@@ -35,7 +35,7 @@ function Assert-Labels {
     if ($labels -ccontains $unexpected) {
         throw "Unexpected label '$unexpected' in '$HtmlPath'."
     }
-    foreach ($value in @('Contractor', 'Accepted', 'Alice', 'Bob', 'Alpha', 'Beta')) {
+    foreach ($value in @('Contractor', 'Accepted', 'Alice', 'Bob', 'Alpha', 'Beta', 'Pending', '200')) {
         if (-not $html.Contains(">$value<")) {
             throw "Field value '$value' was lost in '$HtmlPath'."
         }
@@ -51,11 +51,13 @@ try {
 <?mso-infoPathSolution solutionVersion="1.0.0.1" href="test.xsn"?>
 <my:FormData xmlns:my="urn:infopath-label-test">
   <my:RequestorType>Contractor</my:RequestorType>
-  <my:ContactDetails><my:HTTPResponse>Accepted</my:HTTPResponse></my:ContactDetails>
-  <my:PersonRecord><my:FirstName>Alice</my:FirstName></my:PersonRecord>
-  <my:PersonRecord><my:FirstName>Bob</my:FirstName></my:PersonRecord>
-  <my:AliasName>Alpha</my:AliasName>
-  <my:AliasName>Beta</my:AliasName>
+  <my:Contact_Details><my:HTTPResponse>Accepted</my:HTTPResponse></my:Contact_Details>
+  <my:Person_Record><my:First_Name>Alice</my:First_Name></my:Person_Record>
+  <my:Person_Record><my:First_Name>Bob</my:First_Name></my:Person_Record>
+  <my:Alias_Name>Alpha</my:Alias_Name>
+  <my:Alias_Name>Beta</my:Alias_Name>
+  <my:request_status>Pending</my:request_status>
+  <my:HTTP_ResponseCode>200</my:HTTP_ResponseCode>
 </my:FormData>
 '@ | Set-Content -LiteralPath $xmlPath -Encoding UTF8
 

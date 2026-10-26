@@ -9,12 +9,13 @@
       - GetMetadataforLib_SPS.ps1
 
     Pipeline order:
-      1) ClassifyInfoPathVersions.ps1
-      2) ProcessInfoPathAnalyze.ps1
-      3) ProcessInfoPathProperties.ps1
-      4) AnalyzeInfoPathGroupingFromCsv.ps1
-      5) BuildXsltFromGroupingCsv.ps1
-      6) ProcessInfopathToHTML.ps1
+      1) ProcessXsnTemplates.ps1 (when XsnExportCsvPath is supplied)
+      2) ClassifyInfoPathVersions.ps1
+      3) ProcessInfoPathAnalyze.ps1
+      4) ProcessInfoPathProperties.ps1
+      5) AnalyzeInfoPathGroupingFromCsv.ps1
+      6) BuildXsltFromGroupingCsv.ps1
+      7) ProcessInfopathToHTML.ps1
 
 .PARAMETER SourceDirectory
     Root directory containing InfoPath XML files.
@@ -23,7 +24,7 @@
     Root folder for all pipeline outputs.
 
 .PARAMETER StartStep
-    First pipeline step to run (1 through 6). If omitted, show the numbered
+    First pipeline step to run (1 through 7). If omitted, show the numbered
     steps and prompt; Enter defaults to step 1. Later steps reuse existing
     prerequisite outputs from OutputRootDirectory.
 
@@ -40,7 +41,7 @@
     Default: false
 
 .PARAMETER UseDisplayName
-    Use readable labels derived from XML names in HTML. Set to $false for exact
+    Prefer matched XSN captions, falling back to readable XML-name labels. Set to $false for exact
     internal XML names. Structural identifiers are unchanged. Default: $true.
 
 .PARAMETER DateFormat
@@ -54,6 +55,13 @@
 .PARAMETER FieldRulesPath
     Optional JSON field definitions and display-value mappings for HTML output.
     Passed to template generation and HTML rendering; CSV extraction is unchanged.
+
+.PARAMETER XsnExportCsvPath
+    Optional path to XsnTemplateDownloads.csv copied from the SPS export along
+    with its XSN files. Step 1 extracts manifest information on this machine
+    and view captions into OutputRootDirectory\XSNTemplates. Steps 6 and 7 use
+    that inventory for labels. When omitted, step 1 is explicitly skipped;
+    existing processed inventory under that folder is reused when resuming.
 
 .EXAMPLE
     .\RunInfoPathPipeline.ps1 `
@@ -103,8 +111,10 @@ param(
 
     [string]$FieldRulesPath,
 
-    [ValidateRange(1, 6)]
-    [int]$StartStep = 1
+    [ValidateRange(1, 7)]
+    [int]$StartStep = 1,
+
+    [string]$XsnExportCsvPath
 )
 
 Set-StrictMode -Version Latest
@@ -145,6 +155,13 @@ function Assert-ScriptExists {
 
 $steps = @(
     @{
+        Name = "Extract XSN template information"
+        Script = "ProcessXsnTemplates.ps1"
+        Action = {
+            & $scriptPath -InputCsvPath $XsnExportCsvPath -OutputDirectory $xsnTemplatesDir
+        }
+    }
+    @{
         Name = "Classify versions"
         Script = "ClassifyInfoPathVersions.ps1"
         Action = {
@@ -176,14 +193,14 @@ $steps = @(
         Name = "Build XSLT templates per group"
         Script = "BuildXsltFromGroupingCsv.ps1"
         Action = {
-            & $scriptPath -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath
+            & $scriptPath -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
         }
     }
     @{
         Name = "Transform InfoPath XML to HTML"
         Script = "ProcessInfopathToHTML.ps1"
         Action = {
-            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat -FieldRulesPath $FieldRulesPath
+            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
         }
     }
 )
@@ -234,6 +251,9 @@ $reportsDir = Join-Path -Path $outputRoot -ChildPath "Reports"
 $analysisDir = Join-Path -Path $outputRoot -ChildPath "Analysis"
 $templatesDir = Join-Path -Path $outputRoot -ChildPath "Templates"
 $htmlDir = Join-Path -Path $outputRoot -ChildPath "Html"
+$xsnTemplatesDir = Join-Path -Path $outputRoot -ChildPath "XSNTemplates"
+$processedXsnCsv = Join-Path -Path $xsnTemplatesDir -ChildPath 'XsnTemplateVersions.csv'
+$xsnInventoryPath = if (-not [string]::IsNullOrWhiteSpace($XsnExportCsvPath) -or (Test-Path -LiteralPath $processedXsnCsv -PathType Leaf)) { $processedXsnCsv } else { '' }
 
 foreach ($dir in @($reportsDir, $analysisDir, $templatesDir, $htmlDir)) {
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
@@ -247,6 +267,9 @@ $groupingSummaryPath = Join-Path -Path $reportsDir -ChildPath "InfoPathGroupingS
 $templateMappingCsvPath = Join-Path -Path $templatesDir -ChildPath "InfoPathXsltGroupMap.csv"
 
 foreach ($step in $steps[($StartStep - 1)..($steps.Count - 1)]) {
+    if ($step.Script -eq 'ProcessXsnTemplates.ps1' -and [string]::IsNullOrWhiteSpace($XsnExportCsvPath)) {
+        continue
+    }
     Assert-ScriptExists -ScriptPath (Join-Path -Path $PSScriptRoot -ChildPath $step.Script)
 }
 
@@ -257,6 +280,10 @@ Write-Stage -Group Input -Message "Reports directory: $reportsDir"
 Write-Stage -Group Input -Message "Analysis directory: $analysisDir"
 Write-Stage -Group Input -Message "Templates directory: $templatesDir"
 Write-Stage -Group Input -Message "HTML directory: $htmlDir"
+if (-not [string]::IsNullOrWhiteSpace($XsnExportCsvPath)) {
+    Write-Stage -Group Input -Message "XSN export inventory: $XsnExportCsvPath"
+    Write-Stage -Group Input -Message "XSN information directory: $xsnTemplatesDir"
+}
 
 $startTime = Get-Date
 
@@ -264,6 +291,10 @@ try {
     for ($index = $StartStep - 1; $index -lt $steps.Count; $index++) {
         $step = $steps[$index]
         $stageLabel = "Step $($index + 1)/$($steps.Count): $($step.Name) ($($step.Script))"
+        if ($index -eq 0 -and [string]::IsNullOrWhiteSpace($XsnExportCsvPath)) {
+            Write-Stage -Group Warn -Message "Skipping ${stageLabel}: no -XsnExportCsvPath supplied."
+            continue
+        }
         $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $step.Script
         Write-Stage -Group Run -Message $stageLabel
         & $step.Action
@@ -278,6 +309,9 @@ try {
     Write-Host "Template Mapping    : $templateMappingCsvPath" -ForegroundColor Magenta
     Write-Host "Normalized CSV root : $(Join-Path -Path $reportsDir -ChildPath 'Normalized')" -ForegroundColor Magenta
     Write-Host "HTML output root    : $htmlDir" -ForegroundColor Magenta
+    if (-not [string]::IsNullOrWhiteSpace($XsnExportCsvPath)) {
+        Write-Host "XSN information root: $xsnTemplatesDir" -ForegroundColor Magenta
+    }
 }
 catch {
     Write-Stage -Group Error -Message "Pipeline failed at ${stageLabel}: $($_.Exception.Message)"

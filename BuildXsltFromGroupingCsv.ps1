@@ -24,11 +24,15 @@
     Default: sibling script in the current script directory.
 
 .PARAMETER UseDisplayName
-    Use readable labels derived from XML names in generated templates.
+    Prefer matched XSN captions, falling back to readable XML-name labels.
     Set to $false for exact internal XML names. Default: $true.
 
 .PARAMETER FieldRulesPath
     Optional JSON HTML field definitions; forwarded to the XSLT generator.
+
+.PARAMETER XsnInventoryCsvPath
+    Optional processed XSN inventory from step 1. Uses the same form's exact
+    solutionVersion, or its nearest higher version, for sample captions.
 
 .EXAMPLE
     .\BuildXsltFromGroupingCsv.ps1 `
@@ -52,11 +56,15 @@ param(
 
     [bool]$UseDisplayName = $true,
 
-    [string]$FieldRulesPath
+    [string]$FieldRulesPath,
+
+    [string]$XsnInventoryCsvPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnTemplates.ps1')
+$null = Import-XsnInventory -Path $XsnInventoryCsvPath
 
 function Write-LogEntry {
     param(
@@ -263,10 +271,27 @@ foreach ($group in $groupedRows) {
     $actualXsltPath = $null
     $actualCssPath = $null
     $actualLogPath = $null
+    $xsnMatchStatus = 'NoInventory'
+    $xsnSolutionVersion = ''
+    $xsnTemplateUrl = ''
+    $xsnLabelsPath = ''
 
     try {
         Write-Stage -Group Build -Message "Generating XSLT for group '$suggestedGroup'."
-        $output = & $CreateXsltScriptPath -InfoPathXmlPath $sampleSourceFilePath -OutputName $outputName -OutputDirectory $TemplateOutputDirectory -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath 2>&1
+        $generatorParameters = @{
+            InfoPathXmlPath = $sampleSourceFilePath
+            OutputName = $outputName
+            OutputDirectory = $TemplateOutputDirectory
+            UseDisplayName = $UseDisplayName
+            FieldRulesPath = $FieldRulesPath
+        }
+        if (-not [string]::IsNullOrWhiteSpace($XsnInventoryCsvPath)) {
+            $generatorParameters.XsnInventoryCsvPath = $XsnInventoryCsvPath
+        }
+        $output = & $CreateXsltScriptPath @generatorParameters 2>&1 6>&1
+        foreach ($message in $output) {
+            Write-Host $message.ToString()
+        }
         
         # Extract actual file paths from script output
         $resultMatch = $output | Select-String -Pattern '##TEMPLATE_GENERATION_RESULT##(.+?)##END_RESULT##'
@@ -276,6 +301,12 @@ foreach ($group in $groupedRows) {
             $actualXsltPath = $result.XsltPath
             $actualCssPath = $result.CssPath
             $actualLogPath = $result.LogPath
+            if ($result.PSObject.Properties.Name -contains 'XsnMatchStatus') {
+                $xsnMatchStatus = $result.XsnMatchStatus
+                $xsnSolutionVersion = $result.XsnSolutionVersion
+                $xsnTemplateUrl = $result.XsnTemplateUrl
+                $xsnLabelsPath = $result.XsnLabelsPath
+            }
             
             # Verify actual paths match expected paths
             if ($actualXsltPath -ne $expectedXsltPath) {
@@ -319,6 +350,10 @@ foreach ($group in $groupedRows) {
         GeneratorLogPath      = if ($generationStatus -eq 'Success') { $actualLogPath } else { $null }
         GenerationStatus      = $generationStatus
         GenerationError       = $generationError
+        XsnMatchStatus        = $xsnMatchStatus
+        XsnSolutionVersion    = $xsnSolutionVersion
+        XsnTemplateUrl        = $xsnTemplateUrl
+        XsnLabelsPath         = $xsnLabelsPath
     })
 }
 

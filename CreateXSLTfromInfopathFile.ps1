@@ -24,7 +24,7 @@
 	Default: current working directory.
 
 .PARAMETER UseDisplayName
-	Use readable labels derived from XML names by default in the generated XSLT.
+	Prefer matched XSN captions, falling back to readable XML-name labels.
 	Set to $false for exact internal XML names, including namespace prefixes.
 	Only visible labels change; XPath and CSS identifiers remain internal.
 	Default: $true.
@@ -32,6 +32,11 @@
 .PARAMETER FieldRulesPath
 	Optional JSON HTML field definitions, used to recognize structured display fields.
 	Supply the same file to ProcessInfopathToHTML.ps1 when rendering.
+
+.PARAMETER XsnInventoryCsvPath
+	Processed XSN inventory for sample captions. Matching uses the form identity
+	and exact solutionVersion, or the nearest higher version of the same form.
+	Generated templates also accept per-file captions from the HTML renderer.
 
 .EXAMPLE
 	.\CreateXSLTfromInfopathFile.ps1 `
@@ -63,12 +68,15 @@ param(
 
 	[bool]$UseDisplayName = $true,
 
-	[string]$FieldRulesPath
+	[string]$FieldRulesPath,
+
+	[string]$XsnInventoryCsvPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnTemplates.ps1')
 $fieldRules = Import-HtmlFieldRules -Path $FieldRulesPath
 
 function New-Indent {
@@ -129,6 +137,7 @@ function Convert-ToHumanReadableLabel {
 
 	# Remove namespace prefixes (my:, d:, etc.)
 	$label = $ElementName -replace '^[a-z]+:', ''
+	$label = $label.Replace('_', ' ')
 	
 	# Use [regex]::Replace with full regex engine support for lookahead/lookbehind patterns
 	$pattern = [regex]'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])'
@@ -144,12 +153,21 @@ function Convert-ToHumanReadableLabel {
 function Convert-ToFieldLabel {
 	param(
 		[Parameter(Mandatory = $true)]
-		[string]$ElementName
+		[string]$ElementName,
+
+		[System.Xml.XmlElement]$Node,
+
+		[string]$SelectExpression
 	)
 
 	$displayLabel = [System.Security.SecurityElement]::Escape((Convert-ToHumanReadableLabel -ElementName $ElementName))
+	$embeddedLabel = [System.Security.SecurityElement]::Escape($Node.GetAttribute('label', 'urn:infopath-archive:display'))
+	$labelXPath = [System.Security.SecurityElement]::Escape("($SelectExpression)/@archive:label")
 	$internalLabel = [System.Security.SecurityElement]::Escape($ElementName)
-	return '<xsl:choose><xsl:when test="$UseDisplayName"><xsl:text>{0}</xsl:text></xsl:when><xsl:otherwise><xsl:text>{1}</xsl:text></xsl:otherwise></xsl:choose>' -f $displayLabel, $internalLabel
+	$embeddedChoice = if ($embeddedLabel) {
+		'<xsl:when test="$UseEmbeddedXsnLabels"><xsl:text>{0}</xsl:text></xsl:when>' -f $embeddedLabel
+	} else { '' }
+	return '<xsl:choose><xsl:when test="$UseDisplayName"><xsl:choose><xsl:when test="{0}"><xsl:value-of select="{0}" /></xsl:when>{1}<xsl:otherwise><xsl:text>{2}</xsl:text></xsl:otherwise></xsl:choose></xsl:when><xsl:otherwise><xsl:text>{3}</xsl:text></xsl:otherwise></xsl:choose>' -f $labelXPath, $embeddedChoice, $displayLabel, $internalLabel
 }
 
 function Convert-ToXPathLiteral {
@@ -300,14 +318,14 @@ function Add-ElementPanel {
 	Write-Stage -Group Build -Message ("Rendering element '{0}' at XPath '{1}'" -f $nodeName, $CurrentXPath)
 
 	$safeClass = Convert-ToSafeClassName -Name $nodeName
-	$humanLabel = Convert-ToFieldLabel -ElementName $nodeName
+	$humanLabel = Convert-ToFieldLabel -ElementName $nodeName -Node $Node -SelectExpression $CurrentXPath
 	Add-Line -Lines $Lines -IndentLevel $IndentLevel -Text "<div class=`"section section-$safeClass`">"
 	Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"section-title`">$humanLabel</div>"
 
 	$children = Get-ElementChildren -Node $Node
 	if ($children.Count -eq 0) {
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"field-row`">"
-		$humanLabel = Convert-ToFieldLabel -ElementName $nodeName
+		$humanLabel = Convert-ToFieldLabel -ElementName $nodeName -Node $Node -SelectExpression $CurrentXPath
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<span class=`"field-label`">$humanLabel</span>"
 		Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<div class="field-value">'
 		Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 3) -SelectExpression $CurrentXPath
@@ -340,7 +358,7 @@ function Add-ElementPanel {
 			}
 
 			$sampleChildren = Get-ElementChildren -Node $sampleNode
-			$humanLabel = Convert-ToFieldLabel -ElementName $childName
+			$humanLabel = Convert-ToFieldLabel -ElementName $childName -Node $sampleNode -SelectExpression $childXPath
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"collection collection-$(Convert-ToSafeClassName -Name $childName)`">"
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<div class=`"collection-title`">$humanLabel</div>"
 
@@ -362,7 +380,8 @@ function Add-ElementPanel {
 				Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 4) -Text "<tr>"
 
 				foreach ($headerNode in $sampleChildren) {
-					$headerLabel = Convert-ToFieldLabel -ElementName $headerNode.get_Name()
+					$headerPath = "$childXPath/$(Convert-ToXPathLiteral -Name $headerNode.get_Name())"
+					$headerLabel = Convert-ToFieldLabel -ElementName $headerNode.get_Name() -Node $headerNode -SelectExpression $headerPath
 					Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 5) -Text "<th>$headerLabel</th>"
 				}
 
@@ -397,7 +416,7 @@ function Add-ElementPanel {
 
 		if (Test-LeafNode -Node $child) {
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 1) -Text "<div class=`"field-row`">"
-			$childLabel = Convert-ToFieldLabel -ElementName $childName
+			$childLabel = Convert-ToFieldLabel -ElementName $childName -Node $child -SelectExpression $childXPath
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text "<span class=`"field-label`">$childLabel</span>"
 			Add-Line -Lines $Lines -IndentLevel ($IndentLevel + 2) -Text '<div class="field-value">'
 			Add-ValueRenderer -Lines $Lines -IndentLevel ($IndentLevel + 3) -SelectExpression $childXPath
@@ -461,6 +480,11 @@ $cssPath = Join-Path -Path $OutputDirectory -ChildPath "$baseOutputName.css"
 $logPath = Join-Path -Path $OutputDirectory -ChildPath "$baseOutputName.log"
 
 $logEntries = New-Object System.Collections.Generic.List[string]
+$xsnInventory = Import-XsnInventory -Path $XsnInventoryCsvPath
+$xsnMatch = Find-XsnTemplate -Document $xmlDocument -Inventory $xsnInventory
+$labelCount = Set-XsnDisplayLabels -Document $xmlDocument -Match $xsnMatch
+Write-Stage -Group Input -Message "$($xsnMatch.Message) Applied labels: $labelCount."
+Write-LogEntry -LogEntries $logEntries -Message "$($xsnMatch.Message) Applied labels: $labelCount."
 Write-LogEntry -LogEntries $logEntries -Message "Started template generation."
 Write-LogEntry -LogEntries $logEntries -Message "Input XML: $InfoPathXmlPath"
 Write-LogEntry -LogEntries $logEntries -Message "Output XSLT: $xsltPath"
@@ -481,6 +505,7 @@ Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:output method=`"html`" ind
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:param name=`"sourceFilePath`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text "<xsl:param name=`"sourceFileName`" />"
 Add-Line -Lines $xsltLines -IndentLevel 1 -Text ('<xsl:param name="UseDisplayName" select="{0}()" />' -f $UseDisplayName.ToString().ToLowerInvariant())
+Add-Line -Lines $xsltLines -IndentLevel 1 -Text '<xsl:param name="UseEmbeddedXsnLabels" select="true()" />'
 $richTextTemplates = @'
 <xsl:template name="file-name">
   <xsl:param name="path" />
@@ -654,6 +679,10 @@ Write-Host "Created log: $logPath" -ForegroundColor Green
 
 # Output actual created file paths for validation by caller
 $result = @{
+    XsnMatchStatus = $xsnMatch.Status
+    XsnSolutionVersion = if ($null -ne $xsnMatch.Template) { $xsnMatch.Template.Row.SolutionVersion } else { '' }
+    XsnTemplateUrl = if ($null -ne $xsnMatch.Template) { $xsnMatch.Template.Row.TemplateUrl } else { '' }
+    XsnLabelsPath = if ($null -ne $xsnMatch.Template) { $xsnMatch.Template.LabelsPath } else { '' }
     XsltPath = $xsltPath
     CssPath  = $cssPath
     LogPath  = $logPath

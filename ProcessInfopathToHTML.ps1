@@ -41,7 +41,7 @@
 	Include subfolders when discovering XML files to process.
 
 .PARAMETER UseDisplayName
-	Use readable labels derived from XML names in HTML. Set to $false for exact
+	Prefer matched XSN captions, falling back to readable XML-name labels. Set to $false for exact
 	internal XML names. Requires templates generated with label-mode support.
 	Default: $true.
 
@@ -58,6 +58,11 @@
 .PARAMETER FieldRulesPath
 	Optional JSON field definitions and stored/display mappings for HTML only.
 	Use the same definitions when building templates.
+
+.PARAMETER XsnInventoryCsvPath
+	Optional processed XSN inventory. Matches each file to its same-form exact
+	solutionVersion or nearest higher version and applies available XSN captions
+	when UseDisplayName is true. Writes InfoPathXsnMatches.csv under OutputDirectory.
 
 .EXAMPLE
 	.\ProcessInfopathToHTML.ps1 `
@@ -133,13 +138,17 @@ param(
 	})]
 	[string]$DateTimeFormat = "MM/dd/yyyy HH:mm",
 
-	[string]$FieldRulesPath
+	[string]$FieldRulesPath,
+
+	[string]$XsnInventoryCsvPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnTemplates.ps1')
 $fieldRules = Import-HtmlFieldRules -Path $FieldRulesPath
+$xsnInventory = Import-XsnInventory -Path $XsnInventoryCsvPath
 
 function Write-Stage {
 	param(
@@ -824,11 +833,27 @@ if ($xmlFiles.Count -eq 0) {
 Write-Stage -Group Input -Message "Discovered XML files: $($xmlFiles.Count)"
 
 $processedCount = 0
+$xsnMatches = [System.Collections.Generic.List[object]]::new()
 $pdfCount = 0
 $failedCount = 0
 $errorLogEntries = New-Object System.Collections.Generic.List[string]
 
 foreach ($xmlFile in $xmlFiles) {
+	$matchRow = [pscustomobject][ordered]@{
+		SourceFilePath = $xmlFile.FullName
+		RequestedVersion = ''
+		SourceSolutionName = ''
+		SourceTemplateHref = ''
+		MatchStatus = 'NotProcessed'
+		MatchedVersion = ''
+		MatchedTemplateUrl = ''
+		MatchedXsnPath = ''
+		MatchedLabelsPath = ''
+		AppliedLabelCount = 0
+		Message = ''
+		Error = ''
+	}
+	$xsnMatches.Add($matchRow)
 	try {
 		Write-Stage -Group Build -Message "Processing file: $($xmlFile.FullName)"
 
@@ -901,6 +926,7 @@ foreach ($xmlFile in $xmlFiles) {
 		$xsltArgs.AddParam("sourceFileName", "", $xmlFile.Name)
 		$xsltArgs.AddParam("templateGroup", "", $suggestedGroup)
 		$xsltArgs.AddParam("UseDisplayName", "", $UseDisplayName)
+		$xsltArgs.AddParam("UseEmbeddedXsnLabels", "", $false)
 
 		if ($null -ne $metadataRow) {
 			foreach ($property in $metadataRow.PSObject.Properties) {
@@ -949,6 +975,22 @@ foreach ($xmlFile in $xmlFiles) {
 
 		Export-HtmlFieldAttachments -Document $xmlDocument -Configuration $fieldRules -SourceFileDirectory $xmlFile.DirectoryName -SourceRoot $InfoPathDirectory -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
 		Convert-HtmlFieldValues -Document $xmlDocument -Configuration $fieldRules -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat
+		$xsnMatch = Find-XsnTemplate -Document $xmlDocument -Inventory $xsnInventory
+		$matchRow.RequestedVersion = $xsnMatch.RequestedVersion
+		$matchRow.SourceSolutionName = $xsnMatch.SolutionName
+		$matchRow.SourceTemplateHref = $xsnMatch.Href
+		$matchRow.MatchStatus = $xsnMatch.Status
+		$matchRow.Message = $xsnMatch.Message
+		if ($null -ne $xsnMatch.Template) {
+			$matchRow.MatchedVersion = $xsnMatch.Template.Row.SolutionVersion
+			$matchRow.MatchedTemplateUrl = $xsnMatch.Template.Row.TemplateUrl
+			$matchRow.MatchedXsnPath = $xsnMatch.Template.Row.XsnPath
+			$matchRow.MatchedLabelsPath = $xsnMatch.Template.LabelsPath
+		}
+		$appliedLabels = Set-XsnDisplayLabels -Document $xmlDocument -Match $xsnMatch
+		$matchRow.AppliedLabelCount = if ($UseDisplayName) { $appliedLabels } else { 0 }
+		$matchGroup = if ($xsnMatch.Status -in @('NextVersion', 'NoMatch')) { 'Warn' } else { 'Resolve' }
+		Write-Stage -Group $matchGroup -Message "$($xmlFile.Name): $($xsnMatch.Message)"
 
 		$xmlNodeReader = [System.Xml.XmlNodeReader]::new($xmlDocument)
 		$writerSettings = $xslt.OutputSettings.Clone()
@@ -974,6 +1016,7 @@ foreach ($xmlFile in $xmlFiles) {
 		}
 	}
 	catch {
+		$matchRow.Error = $_.Exception.Message
 		$failedCopyPath = Copy-FailedInfoPathFile -XmlFile $xmlFile -SourceRoot $InfoPathDirectory -FailureRoot $FailedFilesDirectory
 		$failedCount++
 		Write-ErrorLogEntry -ErrorLogEntries $errorLogEntries -SourceFile $xmlFile.FullName -Message "$($_.Exception.Message) Copied to '$failedCopyPath'."
@@ -987,6 +1030,7 @@ if ($errorLogEntries.Count -eq 0) {
 }
 
 $errorLogEntries | Set-Content -LiteralPath $ErrorLogPath -Encoding UTF8
+$xsnMatches | Export-Csv -LiteralPath (Join-Path -Path $OutputDirectory -ChildPath 'InfoPathXsnMatches.csv') -NoTypeInformation -Encoding UTF8
 
 Write-Stage -Group Done -Message "XML files processed to HTML: $processedCount"
 Write-Stage -Group Done -Message "Output folder: $OutputDirectory"

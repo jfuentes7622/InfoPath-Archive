@@ -15,25 +15,155 @@ SharePoint retrieval/metadata steps are not part of local orchestration:
 
 - `MoveLibraryFilesToLocal_SPS.ps1`
 - `GetMetadataforLib_SPS.ps1`
+- [GetLibraryXsnVersions_SPS.ps1](./GetLibraryXsnVersions_SPS.ps1)
 
 Run these separately on SPS when needed, then run the local pipeline against the downloaded XML directory.
+
+### Export the library's XSN template versions
+
+Run [GetLibraryXsnVersions_SPS.ps1](./GetLibraryXsnVersions_SPS.ps1) locally on a
+SharePoint Server in **Windows PowerShell 5.1 / SharePoint Management Shell**,
+using an account with access to the library, its configured templates, and
+their version histories. Requires the `Microsoft.SharePoint.PowerShell`
+snap-in. The server performs downloads only; it does not require `expand.exe`
+or InfoPath and does not inspect XSN contents.
+
+```powershell
+.\GetLibraryXsnVersions_SPS.ps1 `
+  -SiteUrl "http://sharepoint/sites/Finance" `
+  -LibraryName "Applications" `
+  -LocalPath "D:\SPExports\Templates"
+```
+
+The script:
+
+- Discovers the library's configured document template and its content types'
+  configured templates. Ignores non-XSN templates and exports shared URLs only once.
+- Downloads the current XSN and every available historical SharePoint file
+  version, including available minor versions.
+- Creates a fresh `XsnTemplates_<timestamp>_<run-id>` folder on each run.
+  Per-template URL-hash folders contain `template_sp-<file-version>.xsn`.
+- Writes `XsnTemplateDownloads.csv` and `GetLibraryXsnVersions.log`. The CSV
+  includes template URL, configuration sources, SharePoint file version,
+  current/history flag, modification date, relative and original server XSN
+  paths, download status, and error details. `Success` here means downloaded,
+  not extracted or validated as an InfoPath package.
+- Continues with other versions/templates after an individual failure, preserves
+  the partial inventory, and throws if any downloads failed.
+
+### Process the copied XSN export on the pipeline machine
+
+Copy the **entire timestamped export folder**, including
+`XsnTemplateDownloads.csv` and the per-template XSN folders, to the processing
+machine. Keep their relative layout. The pipeline does not use the original
+server's absolute paths, so the copied export can be on a different drive or
+machine without editing the CSV.
+
+```powershell
+.\RunInfoPathPipeline.ps1 `
+  -SourceDirectory "D:\Data\InfoPathXml" `
+  -OutputRootDirectory "D:\Data\PipelineOutput" `
+  -XsnExportCsvPath "D:\Data\XsnExport\XsnTemplateDownloads.csv" `
+  -StartStep 1
+```
+
+Step 1 runs [ProcessXsnTemplates.ps1](./ProcessXsnTemplates.ps1) locally.
+It requires Windows `expand.exe`, but no SharePoint snap-in or InfoPath.
+It extracts `manifest.xsf` and its declared view XSL files, reads
+`solutionVersion` and the manifest's `name` form identity, recovers field
+captions from view bindings, and computes the XSN file's SHA-256 on this machine.
+Outputs are grouped under `OutputRootDirectory\XSNTemplates`:
+
+- `XsnTemplateVersions.csv`: SharePoint metadata plus resolved local XSN path,
+  `SolutionVersion`, `SolutionName`, `ManifestPath`, SHA-256, download status,
+  processing status, view count, resolved label count, relative label-map path,
+  and error details.
+- `Manifests\<row-number>\manifest.xsf`: extracted manifests for successful rows.
+- `Manifests\<row-number>\View*.xsl`: declared views retained for inspection.
+- `Manifests\<row-number>\FieldLabels.json`: resolved, namespace-aware field labels.
+- `FieldLabelCandidates.csv` and `FieldLabelResolution.csv` beside each manifest:
+  binding/view/association details and ambiguity decisions, when labels are present.
+- `ProcessXsnTemplates.log`: local processing messages and errors.
+
+Failed downloads and invalid/missing packages remain failed in the processed
+inventory. Other packages are processed, then step 1 throws if any rows failed,
+preventing later pipeline steps from running. The source files and download CSV
+are not changed. If `-XsnExportCsvPath` is omitted, step 1 explicitly reports
+that it is skipped; XML-only runs remain supported. Steps 6 and 7 reuse an
+existing `XSNTemplates\XsnTemplateVersions.csv` when resuming without the
+original download CSV.
+
+**Matching data XML to templates:** compare the XML processing instruction's
+`mso-infoPathSolution solutionVersion` (the local classification report's
+`TemplateVersion`) to the processed inventory's `SolutionVersion`, not its
+`SharePointVersion`. For example, SharePoint file version `3.0` may contain
+InfoPath solution version `1.0.0.27`. Also check the form identity (`name` in
+the XML processing instruction versus `SolutionName`) and template URL (`href`
+in the XML), because different forms can share the same numeric version.
+Only use rows with `Status = Success`. Multiple SharePoint versions may contain
+the same internal solution version; the inventory retains them separately.
+During HTML generation, the same form's exact solution version is preferred.
+If absent, the nearest available **higher numeric version** is used; for
+example, `1.0.0.4` can use `1.0.0.10`, but never an older version or another
+form's template. Within one solution version, a matching template URL is
+preferred, then the highest SharePoint file version and latest modification
+date. Without a form identity, a template URL or unambiguous filename is
+required; ambiguous identities fall back to readable XML-name labels.
+
+`Html\InfoPathXsnMatches.csv` records each data file's requested version,
+identity, template href, exact/next-version/no-match result, selected version,
+XSN and label-map paths, applied-label count, and errors. The generated
+`Templates\InfoPathXsltGroupMap.csv` also records the XSN selected for each
+template's sample. Runtime matching is per data file, not merely per group.
+
+**Limits:** this exports only the configured template URLs and history still
+retained and accessible in SharePoint. It cannot recover deleted history,
+previously configured template URLs, or templates referenced only by old XML
+forms. If template history was not retained, only the current XSN may be
+available. The server downloader remains separate from the local pipeline.
+XSN captions are used in the generated archive HTML, but the original InfoPath
+layout, rules, and interactive behavior are not reproduced. Older exports without `XsnRelativePath` need to be
+regenerated with the updated SPS downloader before using this workflow.
+Processed inventories created before caption extraction must be regenerated
+with step 1 before they can supply XSN labels.
 
 ## Current Local Pipeline Order
 
 The current order is dependency-correct and implemented in `RunInfoPathPipeline.ps1`:
 
-1. `ClassifyInfoPathVersions.ps1`
-2. `ProcessInfoPathAnalyze.ps1`
-3. `ProcessInfoPathProperties.ps1`
-4. `AnalyzeInfoPathGroupingFromCsv.ps1`
-5. `BuildXsltFromGroupingCsv.ps1`
-6. `ProcessInfopathToHTML.ps1`
+1. `ProcessXsnTemplates.ps1` (when `-XsnExportCsvPath` is supplied)
+2. `ClassifyInfoPathVersions.ps1`
+3. `ProcessInfoPathAnalyze.ps1`
+4. `ProcessInfoPathProperties.ps1`
+5. `AnalyzeInfoPathGroupingFromCsv.ps1`
+6. `BuildXsltFromGroupingCsv.ps1`
+7. `ProcessInfopathToHTML.ps1`
 
 Note: `AnalyzeInfoPathGroupingFromCsv.ps1` is not required before `ProcessInfoPathProperties.ps1`.
 
 ## Stage Details
 
-### 1) Classify versions
+### 1) Extract XSN template information
+
+Script: [ProcessXsnTemplates.ps1](./ProcessXsnTemplates.ps1)
+
+Input:
+
+- `-InputCsvPath`: the copied `XsnTemplateDownloads.csv`.
+- XSN files beside the CSV, located using its `XsnRelativePath` column.
+- `-OutputDirectory`: the pipeline's `XSNTemplates` output folder.
+
+Output:
+
+- `XsnTemplateVersions.csv`
+- Extracted `manifest.xsf` files and `ProcessXsnTemplates.log`
+
+Purpose:
+
+- Process downloaded templates off-server and identify their internal
+  InfoPath solution versions and form identities for matching to XML data.
+
+### 2) Classify versions
 
 Script: `ClassifyInfoPathVersions.ps1`
 
@@ -50,7 +180,7 @@ Purpose:
 
 - Extract template version metadata and parse status for each XML file.
 
-### 2) Analyze structure by version
+### 3) Analyze structure by version
 
 Script: `ProcessInfoPathAnalyze.ps1`
 
@@ -58,7 +188,7 @@ Input:
 
 - `-SourceDirectory`
 - `-OutputDirectory`
-- `-VersioningCsvPath` (from Stage 1, optional but recommended)
+- `-VersioningCsvPath` (from Stage 2, optional but recommended)
 - `-MaxFilesToAnalyze`
 - `-Recurse` (optional)
 
@@ -72,7 +202,7 @@ Purpose:
 
 - Discover structure and repeating groups per template version.
 
-### 3) Extract normalized properties
+### 4) Extract normalized properties
 
 Script: `ProcessInfoPathProperties.ps1`
 
@@ -80,8 +210,8 @@ Input:
 
 - `-SourceDirectory`
 - `-OutputDirectory`
-- `-VersioningCsvPath` (from Stage 1)
-- `-AnalysisDirectory` (from Stage 2)
+- `-VersioningCsvPath` (from Stage 2)
+- `-AnalysisDirectory` (from Stage 3)
 - `-Recurse` (optional)
 
 Output under `OutputDirectory/Normalized`:
@@ -110,7 +240,7 @@ PropertyMapping metadata (updated):
 - `AttachSizeBytesColumnName`
 - `AttachMimeTypeColumnName`
 
-### 4) Group files for template selection
+### 5) Group files for template selection
 
 Script: `AnalyzeInfoPathGroupingFromCsv.ps1`
 
@@ -127,16 +257,17 @@ Purpose:
 
 - Build `SuggestedGroup` values for template generation and HTML transform lookup.
 
-### 5) Build XSLT templates by group
+### 6) Build XSLT templates by group
 
 Script: `BuildXsltFromGroupingCsv.ps1`
 
 Input:
 
-- `-GroupingCsvPath` (from Stage 4)
+- `-GroupingCsvPath` (from Stage 5)
 - `-TemplateOutputDirectory`
 - `-UseDisplayName` (optional, defaults to `$true`)
 - `-FieldRulesPath` (optional JSON HTML field definitions)
+- `-XsnInventoryCsvPath` (optional processed XSN inventory from Stage 1)
 
 Output:
 
@@ -151,24 +282,25 @@ Notes:
 - Dotted version segments in the output base name are preserved. For example, `tmpl__1.0.0.3667__1.0.0` produces `tmpl__1.0.0.3667__1.0.0.xslt`.
 - A mapping is marked successful only after its generated XSLT, CSS, and log files are verified on disk.
 - New templates support readable/internal label modes and read-only boolean checkboxes.
-- Date formatting is applied in Stage 6, not baked into the templates.
+- Date formatting is applied in Stage 7, not baked into the templates.
 
-### 6) Transform XML to HTML
+### 7) Transform XML to HTML
 
 Script: `ProcessInfopathToHTML.ps1`
 
 Input:
 
 - `-InfoPathDirectory`
-- `-MetadataCsvPath` (Stage 1 CSV)
-- `-GroupingCsvPath` (Stage 4 CSV)
-- `-TemplateMappingCsvPath` (Stage 5 CSV)
+- `-MetadataCsvPath` (Stage 2 CSV)
+- `-GroupingCsvPath` (Stage 5 CSV)
+- `-TemplateMappingCsvPath` (Stage 6 CSV)
 - `-OutputDirectory`
 - `-PrintToPdf` (optional)
 - `-UseDisplayName` (optional, defaults to `$true`)
 - `-DateFormat` (optional, defaults to `MM/dd/yyyy`; HTML display only)
 - `-DateTimeFormat` (optional, defaults to `MM/dd/yyyy HH:mm`; HTML display only)
-- `-FieldRulesPath` (optional; use the same JSON definitions as Stage 5)
+- `-FieldRulesPath` (optional; use the same JSON definitions as Stage 6)
+- `-XsnInventoryCsvPath` (optional; the pipeline supplies Stage 1's inventory)
 - `-Recurse` (optional)
 
 Output:
@@ -177,6 +309,7 @@ Output:
 - Optional PDFs generated through headless Microsoft Edge or Google Chrome
 - Copied CSS assets
 - `ProcessInfopathToHTML-errors.log`
+- `InfoPathXsnMatches.csv`
 - `FailedInfoPathFiles` folder for failures
 
 HTML display behavior:
@@ -238,8 +371,9 @@ Update:
 | Parameter | Required | Default | Purpose |
 |-----------|----------|---------|---------|
 | `-SourceDirectory` | Yes | None | Root folder containing InfoPath XML files. |
-| `-OutputRootDirectory` | Yes | None | Root folder for reports, analysis, templates, and HTML. |
-| `-StartStep` | No | Prompt (`1`) | Start at step `1` through `6`, then run all remaining steps. Supplying this parameter bypasses the prompt. |
+| `-OutputRootDirectory` | Yes | None | Root folder for reports, analysis, XSN information, XSLT templates, and HTML. |
+| `-StartStep` | No | Prompt (`1`) | Start at step `1` through `7`, then run all remaining steps. Supplying this parameter bypasses the prompt. |
+| `-XsnExportCsvPath` | No | None | Copied `XsnTemplateDownloads.csv`; step 1 processes its XSNs under `XSNTemplates`. Omit to explicitly skip XSN processing. |
 | `-Recurse` | No | Off | Include XML files in source subfolders. |
 | `-MaxFilesToAnalyze` | No | `5` | Sample files analyzed per version; accepts `1` through `100`. |
 | `-PrintToPdf` | No | `"false"` | Print HTML to PDF; accepts `yes`, `no`, `true`, `false`, `1`, or `0`. |
@@ -274,9 +408,9 @@ Optional PDF output:
 
 ### Starting or resuming at a specific step
 
-At startup, [RunInfoPathPipeline.ps1](./RunInfoPathPipeline.ps1) lists all six
+At startup, [RunInfoPathPipeline.ps1](./RunInfoPathPipeline.ps1) lists all seven
 numbered steps with their descriptions and script names. Enter a step number
-to start there and run through step 6, or press Enter (or enter `1`) to run
+to start there and run through step 7, or press Enter (or enter `1`) to run
 the entire pipeline. Invalid entries prompt again.
 
 Each step announces its number, description, and script before running and
@@ -286,13 +420,14 @@ and reports the failed step so you can fix the problem and restart there.
 When resuming, use the same source and output folders and retain the required
 outputs from earlier steps; skipped steps are not rerun or regenerated.
 For automated runs, supply `-StartStep 1` to avoid the interactive prompt.
+The new XSN extraction stage is step 1; former steps 1-6 are now steps 2-7.
 For example, to rebuild templates and then render HTML:
 
 ```powershell
 .\RunInfoPathPipeline.ps1 `
   -SourceDirectory "C:\Data\InfoPathXml" `
   -OutputRootDirectory "C:\Data\InfoPathOutput" `
-  -StartStep 5
+  -StartStep 6
 ```
 
 ### HTML field labels
@@ -301,14 +436,33 @@ For example, to rebuild templates and then render HTML:
 `CreateXSLTfromInfopathFile.ps1`, and `ProcessInfopathToHTML.ps1` accept
 `[bool] -UseDisplayName`, defaulting to `$true`.
 
-- `$true`: readable labels derived from XML names, such as `my:RequestorType`
+- `$true`: original captions recovered from the matched XSN when available.
+  The XSN's default view takes precedence. Captions found only in other views
+  are used when unambiguous; conflicting captions fall back to XML-name labels.
+  Recovery supports explicit HTML label associations, ARIA labels, simple
+  label/control table cells, and repeating-table column headers. Binding
+  paths are namespace-aware and include repeating `xsl:for-each` contexts.
+  Complex/dynamic bindings and layouts without a clear label association
+  are not guessed; inspect the caption audit CSVs for unresolved fields.
+  Without an XSN caption, readable labels are derived from XML names, such as `my:RequestorType`
   becoming `Requestor Type` and `HTTPResponse` becoming `HTTP Response`.
-  These are not the actual labels configured in the original InfoPath form.
+  Underscores are also replaced with spaces: `my:Requestor_Type` becomes
+  `Requestor Type`. Existing capitalization is preserved.
+  These fallback labels are not the actual captions configured in InfoPath.
 - `$false`: exact internal XML names, including namespace prefixes.
 - Applies to field labels, section/collection titles, and repeating-table field headers.
 - XPath bindings, CSS classes, grouping, and normalized CSV names remain unchanged.
 - Newly generated templates support either mode at transform time. Regenerate older
-  templates (Stage 5) once before using this option with Stage 6.
+  templates (Stage 6) once before using this option with Stage 7, including to
+  apply updated underscore-to-space labels or XSN caption support.
+
+The pipeline passes its processed XSN inventory automatically. When running
+the generator, builder, or renderer separately, supply
+`-XsnInventoryCsvPath "D:\Data\PipelineOutput\XSNTemplates\XsnTemplateVersions.csv"`.
+Direct XSLT transforms use the selected sample's embedded captions; use the
+HTML renderer with the inventory to rematch captions for each data file.
+The renderer disables embedded sample captions, so an unmatched file cannot
+inherit a different form's labels.
 
 To render internal names:
 
@@ -319,7 +473,7 @@ To render internal names:
   -UseDisplayName $false
 ```
 
-When running Stage 6 separately, pass `-UseDisplayName $false` there as well;
+When running Stage 7 separately, pass `-UseDisplayName $false` there as well;
 its default is `$true`, regardless of the default baked into the template.
 
 Run `.\Helper\TestUseDisplayName.ps1` to verify both label modes end-to-end,
@@ -329,7 +483,7 @@ The test uses temporary synthetic XML and removes its generated files afterward.
 ### HTML dates and boolean fields
 
 `RunInfoPathPipeline.ps1` accepts `-DateFormat` and `-DateTimeFormat` and passes
-them only to `ProcessInfopathToHTML.ps1` (Stage 6). The defaults are `MM/dd/yyyy`
+them only to `ProcessInfopathToHTML.ps1` (Stage 7). The defaults are `MM/dd/yyyy`
 for dates and `MM/dd/yyyy HH:mm` for timestamps.
 Use a .NET date/time format string, for example:
 
@@ -349,7 +503,7 @@ Use a .NET date/time format string, for example:
   seconds or the stored offset, or to intentionally hide time.
 - Source XML, normalized CSVs, metadata, and generated templates are unchanged.
   Empty values, invalid dates, and other text remain unchanged.
-- When running Stage 6 separately, supply both preferred format options there; no template
+- When running Stage 7 separately, supply both preferred format options there; no template
   regeneration is needed to change date formatting.
 - Empty format strings and invalid .NET format strings are rejected during
   parameter validation, before processing begins. Format tokens are case-sensitive:
@@ -358,8 +512,8 @@ Use a .NET date/time format string, for example:
   as checked/unchecked, disabled checkboxes. Numeric `1`/`0` values render as
   checkboxes only when the element has an explicit `xsi:type` of `boolean`.
   Ordinary numeric fields remain text.
-- Regenerate templates (Stage 5) to enable checkboxes in existing output, then
-  rerun Stage 6. Checkboxes are read-only because these are archived forms.
+- Regenerate templates (Stage 6) to enable checkboxes in existing output, then
+  rerun Stage 7. Checkboxes are read-only because these are archived forms.
 - PDFs printed from the HTML inherit its displayed dates and checkboxes.
 
 Timestamp display examples for the source value `2026-10-23T14:05:06-04:00`:
@@ -486,12 +640,12 @@ unknown rule properties, invalid format strings, and invalid typed values are
 reported explicitly; per-file rendering errors use the normal error log and
 failed-file copy mechanism.
 
-Pass the same `-FieldRulesPath` to Stage 5 and Stage 6 when running them separately.
+Pass the same `-FieldRulesPath` to Stage 6 and Stage 7 when running them separately.
 Adding/changing structured field types (for example a signature or structured
-hyperlink) requires regenerating Stage 5 templates before Stage 6. Display-map,
-culture, and format-only changes can be applied by rerunning Stage 6 with the
+hyperlink) requires regenerating Stage 6 templates before Stage 7. Display-map,
+culture, and format-only changes can be applied by rerunning Stage 7 with the
 existing current templates. Direct XSLT execution does not load the JSON file;
-use Stage 6 to apply these rules.
+use Stage 7 to apply these rules.
 
 ### Run HTML rendering separately
 
@@ -513,9 +667,9 @@ label mode, or PDF output without repeating extraction:
   -PrintToPdf "true"
 ```
 
-Stage 6 defaults to readable labels, `MM/dd/yyyy` dates, and `MM/dd/yyyy HH:mm`
+Stage 7 defaults to readable labels, `MM/dd/yyyy` dates, and `MM/dd/yyyy HH:mm`
 timestamps each time it runs; pass preferred options and `-FieldRulesPath`
-explicitly. Directly executing a generated XSLT outside Stage 6 supports its
+explicitly. Directly executing a generated XSLT outside Stage 7 supports its
 built-in labels and checkboxes but does not apply date formats or field rules.
 
 ### Rich-text fields and form structure
@@ -545,15 +699,15 @@ built-in labels and checkboxes but does not apply date formats or field rules.
 - Keep [HtmlRendering.ps1](./Helper/HtmlRendering.ps1) with the scripts; the
   generator and HTML processor share its namespace-aware classification rules.
 
-Regenerate templates (Stage 5), then rerun Stage 6 to apply this fix to existing
+Regenerate templates (Stage 6), then rerun Stage 7 to apply this fix to existing
 output, or rerun the full pipeline. PDF output inherits the corrected HTML.
 
 ### Updating existing output
 
-- To enable checkboxes or label-mode support in older templates, rerun Stage 5
-  and then Stage 6, or rerun the full pipeline. Existing templates are not
-  upgraded merely by rerunning Stage 6.
-- To change only date formatting with current templates, rerun Stage 6 with
+- To enable checkboxes or label-mode support in older templates, rerun Stage 6
+  and then Stage 7, or rerun the full pipeline. Existing templates are not
+  upgraded merely by rerunning Stage 7.
+- To change only date formatting with current templates, rerun Stage 7 with
   `-DateFormat` and/or `-DateTimeFormat`; regeneration of XSLT/CSS is unnecessary.
 - Generated templates continue to render `ATTACHMENT::` markers as relative links,
   including markers in repeated leaf values. Keep the HTML, CSS, and attachment
@@ -576,7 +730,7 @@ defaults, internal-name mode, generated-template defaults, standalone overrides,
 and unchanged field values and structural bindings.
 
 Run `.\Helper\TestHtmlValueFormatting.ps1` to verify date formatting and checkboxes
-end-to-end, standalone Stage 6 overrides, and unchanged XML/CSV values.
+end-to-end, standalone Stage 7 overrides, and unchanged XML/CSV values.
 [TestHtmlValueFormatting.ps1](./Helper/TestHtmlValueFormatting.ps1) also checks
 exact repeated-date counts, time-zone offsets, checked/unchecked and read-only
 states, ordinary numeric values, empty fields, invalid dates and format strings,
@@ -636,9 +790,9 @@ real browser PDF generation. A supported browser must be installed.
 
 ## Dependency Notes
 
-- `ProcessInfoPathProperties.ps1` depends on Stage 1 and Stage 2 outputs, not on grouping CSV.
+- `ProcessInfoPathProperties.ps1` depends on Stage 2 and Stage 3 outputs, not on grouping CSV.
 - HTML rendering path depends on grouping and template mapping outputs.
-- If templates are stale, rerun Stage 5 and Stage 6.
+- If templates are stale, rerun Stage 6 and Stage 7.
 
 ## Troubleshooting
 
@@ -647,7 +801,7 @@ real browser PDF generation. A supported browser must be installed.
 - Confirm `InfoPathGroupingDetailed.csv` exists and has `SuggestedGroup` values.
 - Confirm `InfoPathXsltGroupMap.csv` contains those groups.
 - Confirm `XsltPath` files exist on disk.
-- Rerun Stage 5 if a mapping refers to an older or missing template filename.
+- Rerun Stage 6 if a mapping refers to an older or missing template filename.
 
 ### Attachment links show but file missing
 
@@ -674,7 +828,7 @@ real browser PDF generation. A supported browser must be installed.
   PowerShell command as shown in the examples.
 - Existing PDFs are preserved if a new conversion fails, so an older PDF is not
   evidence that the latest run succeeded.
-- After updating the script, rerun Stage 6 with `-PrintToPdf "true"`. Template
+- After updating the script, rerun Stage 7 with `-PrintToPdf "true"`. Template
   regeneration is not required for the PDF fix.
 
 ### Empty extraction output
@@ -687,21 +841,21 @@ real browser PDF generation. A supported browser must be installed.
 
 - Confirm the value is an ISO date or date/time leaf value; arbitrary date-like
   text is not reformatted.
-- Run Stage 6 with the desired `-DateFormat` and `-DateTimeFormat`; opening or directly transforming
-  the XSLT does not perform Stage 6's in-memory date formatting.
+- Run Stage 7 with the desired `-DateFormat` and `-DateTimeFormat`; opening or directly transforming
+  the XSLT does not perform Stage 7's in-memory date formatting.
 - Date-only values use `-DateFormat`; timestamps use `-DateTimeFormat` and show
   hours/minutes by default. Include seconds/offset tokens when those should be visible.
 
 ### Boolean fields still show True/False text
 
-- Regenerate the templates with Stage 5, then rerun Stage 6.
+- Regenerate the templates with Stage 6, then rerun Stage 7.
 - Confirm the mapping points to the regenerated XSLT.
 - Untyped numeric `1`/`0` values intentionally remain text to avoid treating
   ordinary numeric fields as booleans.
 
 ### HTML tags appear as field labels or rich-text content is flattened
 
-- Regenerate Stage 5 templates with the updated generator, then rerun Stage 6.
+- Regenerate Stage 6 templates with the updated generator, then rerun Stage 7.
   Updating only the HTML processor does not repair an older template's structure.
 - Confirm the group mapping points to the regenerated XSLT.
 - XHTML markup should use `http://www.w3.org/1999/xhtml`; common unqualified HTML
