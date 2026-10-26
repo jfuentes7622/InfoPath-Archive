@@ -69,7 +69,7 @@ try {
         if ($mode -eq 'Internal') {
             $parameters.UseDisplayName = $false
         }
-        & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters
+        & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters -StartStep 1
         Assert-Labels -HtmlPath (Join-Path -Path $output -ChildPath 'Html\Sample.html') -DisplayNames ($mode -eq 'Default')
         $outputs[$mode] = $output
 

@@ -22,6 +22,11 @@
 .PARAMETER OutputRootDirectory
     Root folder for all pipeline outputs.
 
+.PARAMETER StartStep
+    First pipeline step to run (1 through 6). If omitted, show the numbered
+    steps and prompt; Enter defaults to step 1. Later steps reuse existing
+    prerequisite outputs from OutputRootDirectory.
+
 .PARAMETER Recurse
     Include subfolders when searching for XML files.
 
@@ -96,13 +101,14 @@ param(
     })]
     [string]$DateTimeFormat = "MM/dd/yyyy HH:mm",
 
-    [string]$FieldRulesPath
+    [string]$FieldRulesPath,
+
+    [ValidateRange(1, 6)]
+    [int]$StartStep = 1
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
-$null = Import-HtmlFieldRules -Path $FieldRulesPath
 
 function Write-Stage {
     param(
@@ -137,6 +143,82 @@ function Assert-ScriptExists {
     }
 }
 
+$steps = @(
+    @{
+        Name = "Classify versions"
+        Script = "ClassifyInfoPathVersions.ps1"
+        Action = {
+            & $scriptPath -SourceDirectory $sourceRoot -OutputCsvPath $versionCsvPath -Recurse:$Recurse.IsPresent
+        }
+    }
+    @{
+        Name = "Analyze structure by version"
+        Script = "ProcessInfoPathAnalyze.ps1"
+        Action = {
+            & $scriptPath -SourceDirectory $sourceRoot -OutputDirectory $analysisDir -VersioningCsvPath $versionCsvPath -MaxFilesToAnalyze $MaxFilesToAnalyze -Recurse:$Recurse.IsPresent
+        }
+    }
+    @{
+        Name = "Extract normalized properties"
+        Script = "ProcessInfoPathProperties.ps1"
+        Action = {
+            & $scriptPath -SourceDirectory $sourceRoot -OutputDirectory $reportsDir -VersioningCsvPath $versionCsvPath -AnalysisDirectory $analysisDir -Recurse:$Recurse.IsPresent
+        }
+    }
+    @{
+        Name = "Analyze grouping from version CSV"
+        Script = "AnalyzeInfoPathGroupingFromCsv.ps1"
+        Action = {
+            & $scriptPath -InputCsvPath $versionCsvPath -OutputCsvPath $groupingDetailedPath -SummaryCsvPath $groupingSummaryPath
+        }
+    }
+    @{
+        Name = "Build XSLT templates per group"
+        Script = "BuildXsltFromGroupingCsv.ps1"
+        Action = {
+            & $scriptPath -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath
+        }
+    }
+    @{
+        Name = "Transform InfoPath XML to HTML"
+        Script = "ProcessInfopathToHTML.ps1"
+        Action = {
+            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat -FieldRulesPath $FieldRulesPath
+        }
+    }
+)
+
+Write-Stage -Group Init -Message "InfoPath local pipeline steps:"
+for ($index = 0; $index -lt $steps.Count; $index++) {
+    Write-Host ("  {0}) {1} ({2})" -f ($index + 1), $steps[$index].Name, $steps[$index].Script)
+}
+
+if (-not $PSBoundParameters.ContainsKey('StartStep')) {
+    while ($true) {
+        $selection = Read-Host "Enter the starting step (1-$($steps.Count)) [1]"
+        if ([string]::IsNullOrWhiteSpace($selection)) {
+            $StartStep = 1
+            break
+        }
+
+        $selectedStep = 0
+        if ([int]::TryParse($selection, [ref]$selectedStep) -and $selectedStep -ge 1 -and $selectedStep -le $steps.Count) {
+            $StartStep = $selectedStep
+            break
+        }
+
+        Write-Stage -Group Warn -Message "Invalid step. Enter a whole number from 1 to $($steps.Count)."
+    }
+}
+
+Write-Stage -Group Input -Message "Starting at step $StartStep/$($steps.Count): $($steps[$StartStep - 1].Name)"
+if ($StartStep -gt 1) {
+    Write-Stage -Group Warn -Message "Earlier steps will be skipped. Their required outputs must already exist in OutputRootDirectory."
+}
+
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+$null = Import-HtmlFieldRules -Path $FieldRulesPath
+
 if (-not (Test-Path -LiteralPath $SourceDirectory -PathType Container)) {
     throw "SourceDirectory does not exist or is not a folder: $SourceDirectory"
 }
@@ -164,15 +246,8 @@ $groupingDetailedPath = Join-Path -Path $reportsDir -ChildPath "InfoPathGrouping
 $groupingSummaryPath = Join-Path -Path $reportsDir -ChildPath "InfoPathGroupingSummary.csv"
 $templateMappingCsvPath = Join-Path -Path $templatesDir -ChildPath "InfoPathXsltGroupMap.csv"
 
-$classifyScript = Join-Path -Path $PSScriptRoot -ChildPath "ClassifyInfoPathVersions.ps1"
-$analyzeScript = Join-Path -Path $PSScriptRoot -ChildPath "ProcessInfoPathAnalyze.ps1"
-$propertiesScript = Join-Path -Path $PSScriptRoot -ChildPath "ProcessInfoPathProperties.ps1"
-$groupingScript = Join-Path -Path $PSScriptRoot -ChildPath "AnalyzeInfoPathGroupingFromCsv.ps1"
-$buildXsltScript = Join-Path -Path $PSScriptRoot -ChildPath "BuildXsltFromGroupingCsv.ps1"
-$htmlScript = Join-Path -Path $PSScriptRoot -ChildPath "ProcessInfopathToHTML.ps1"
-
-foreach ($script in @($classifyScript, $analyzeScript, $propertiesScript, $groupingScript, $buildXsltScript, $htmlScript)) {
-    Assert-ScriptExists -ScriptPath $script
+foreach ($step in $steps[($StartStep - 1)..($steps.Count - 1)]) {
+    Assert-ScriptExists -ScriptPath (Join-Path -Path $PSScriptRoot -ChildPath $step.Script)
 }
 
 Write-Stage -Group Init -Message "Starting InfoPath local pipeline orchestration."
@@ -186,23 +261,14 @@ Write-Stage -Group Input -Message "HTML directory: $htmlDir"
 $startTime = Get-Date
 
 try {
-    Write-Stage -Group Run -Message "Step 1/6: Classify versions"
-    & $classifyScript -SourceDirectory $sourceRoot -OutputCsvPath $versionCsvPath -Recurse:$Recurse.IsPresent
-
-    Write-Stage -Group Run -Message "Step 2/6: Analyze structure by version"
-    & $analyzeScript -SourceDirectory $sourceRoot -OutputDirectory $analysisDir -VersioningCsvPath $versionCsvPath -MaxFilesToAnalyze $MaxFilesToAnalyze -Recurse:$Recurse.IsPresent
-
-    Write-Stage -Group Run -Message "Step 3/6: Extract normalized properties"
-    & $propertiesScript -SourceDirectory $sourceRoot -OutputDirectory $reportsDir -VersioningCsvPath $versionCsvPath -AnalysisDirectory $analysisDir -Recurse:$Recurse.IsPresent
-
-    Write-Stage -Group Run -Message "Step 4/6: Analyze grouping from version CSV"
-    & $groupingScript -InputCsvPath $versionCsvPath -OutputCsvPath $groupingDetailedPath -SummaryCsvPath $groupingSummaryPath
-
-    Write-Stage -Group Run -Message "Step 5/6: Build XSLT templates per group"
-    & $buildXsltScript -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath
-
-    Write-Stage -Group Run -Message "Step 6/6: Transform InfoPath XML to HTML"
-    & $htmlScript -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat -FieldRulesPath $FieldRulesPath
+    for ($index = $StartStep - 1; $index -lt $steps.Count; $index++) {
+        $step = $steps[$index]
+        $stageLabel = "Step $($index + 1)/$($steps.Count): $($step.Name) ($($step.Script))"
+        $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $step.Script
+        Write-Stage -Group Run -Message $stageLabel
+        & $step.Action
+        Write-Stage -Group Done -Message "$stageLabel completed."
+    }
 
     $duration = (Get-Date) - $startTime
     Write-Stage -Group Done -Message "Pipeline completed successfully in $($duration.ToString())."
@@ -214,6 +280,6 @@ try {
     Write-Host "HTML output root    : $htmlDir" -ForegroundColor Magenta
 }
 catch {
-    Write-Stage -Group Error -Message "Pipeline failed: $($_.Exception.Message)"
+    Write-Stage -Group Error -Message "Pipeline failed at ${stageLabel}: $($_.Exception.Message)"
     throw
 }

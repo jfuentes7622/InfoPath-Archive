@@ -145,7 +145,7 @@ try {
     foreach ($displayNames in @($true, $false)) {
         $output = Join-Path -Path $testRoot -ChildPath ("Output-" + $displayNames)
         & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') `
-            -SourceDirectory $source -OutputRootDirectory $output -UseDisplayName $displayNames
+            -SourceDirectory $source -OutputRootDirectory $output -UseDisplayName $displayNames -StartStep 1
         $html = Get-Content -LiteralPath (Join-Path -Path $output -ChildPath 'Html\Sample.html') -Raw
         if ($html -notmatch '<p>2026-10-23</p>' -or $html -notmatch '<span>true</span>' -or
             $html -notmatch '10/23/2026' -or ([regex]::Matches($html, '<input\b')).Count -ne 1 -or

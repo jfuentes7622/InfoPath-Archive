@@ -239,6 +239,7 @@ Update:
 |-----------|----------|---------|---------|
 | `-SourceDirectory` | Yes | None | Root folder containing InfoPath XML files. |
 | `-OutputRootDirectory` | Yes | None | Root folder for reports, analysis, templates, and HTML. |
+| `-StartStep` | No | Prompt (`1`) | Start at step `1` through `6`, then run all remaining steps. Supplying this parameter bypasses the prompt. |
 | `-Recurse` | No | Off | Include XML files in source subfolders. |
 | `-MaxFilesToAnalyze` | No | `5` | Sample files analyzed per version; accepts `1` through `100`. |
 | `-PrintToPdf` | No | `"false"` | Print HTML to PDF; accepts `yes`, `no`, `true`, `false`, `1`, or `0`. |
@@ -269,6 +270,29 @@ Optional PDF output:
   -OutputRootDirectory "C:\Data\InfoPathOutput" `
   -Recurse `
   -PrintToPdf "true"
+```
+
+### Starting or resuming at a specific step
+
+At startup, [RunInfoPathPipeline.ps1](./RunInfoPathPipeline.ps1) lists all six
+numbered steps with their descriptions and script names. Enter a step number
+to start there and run through step 6, or press Enter (or enter `1`) to run
+the entire pipeline. Invalid entries prompt again.
+
+Each step announces its number, description, and script before running and
+reports completion afterward. If a step throws an error, the pipeline stops
+and reports the failed step so you can fix the problem and restart there.
+
+When resuming, use the same source and output folders and retain the required
+outputs from earlier steps; skipped steps are not rerun or regenerated.
+For automated runs, supply `-StartStep 1` to avoid the interactive prompt.
+For example, to rebuild templates and then render HTML:
+
+```powershell
+.\RunInfoPathPipeline.ps1 `
+  -SourceDirectory "C:\Data\InfoPathXml" `
+  -OutputRootDirectory "C:\Data\InfoPathOutput" `
+  -StartStep 5
 ```
 
 ### HTML field labels

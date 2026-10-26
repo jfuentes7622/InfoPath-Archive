@@ -79,7 +79,7 @@ Second line</my:Multiline>
     $rules | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $rulesPath -Encoding UTF8
     $output = Join-Path -Path $testRoot -ChildPath 'Mapped Output'
     & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') `
-        -SourceDirectory $source -OutputRootDirectory $output -FieldRulesPath $rulesPath -PrintToPdf 'true'
+        -SourceDirectory $source -OutputRootDirectory $output -FieldRulesPath $rulesPath -PrintToPdf 'true' -StartStep 1
     $htmlPath = Join-Path -Path $output -ChildPath 'Html\Sample.html'
     $html = Get-Content -LiteralPath $htmlPath -Raw
     foreach ($value in @('$1,500.50', '$20.00', '1,250', '75%', '10/21/2026', '10/21/2026 14:30',

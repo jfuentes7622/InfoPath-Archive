@@ -151,7 +151,7 @@ try {
 </my:FormData>
 '@ | Set-Content -LiteralPath (Join-Path -Path $nestedSource -ChildPath 'Sample Form #1.xml') -Encoding UTF8
     & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') `
-        -SourceDirectory $source -OutputRootDirectory $output -Recurse -PrintToPdf 'true'
+        -SourceDirectory $source -OutputRootDirectory $output -Recurse -PrintToPdf 'true' -StartStep 1
     $generatedPdf = Join-Path -Path $output -ChildPath 'Html\Nested Folder\Sample Form #1.pdf'
     if (-not (Test-Path -LiteralPath $generatedPdf -PathType Leaf)) {
         throw "Browser failed to generate PDF. See $(Join-Path -Path $output -ChildPath 'Html\ProcessInfopathToHTML-errors.log')."

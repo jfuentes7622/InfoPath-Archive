@@ -110,7 +110,7 @@ try {
             $parameters.DateTimeFormat = 'dd/MM/yyyy HH:mm'
             $dates = @('23/10/2026', '23/10/2026 00:30', '23/10/2026 23:45', '29/02/2024', '31/12/2025', '31/12/2025', '02/01/2026', '02/01/2026')
         }
-        & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters
+        & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters -StartStep 1
         Assert-HtmlValues -HtmlPath (Join-Path -Path $output -ChildPath 'Html\Sample.html') -ExpectedDates $dates
         $outputs[$mode] = $output
 
