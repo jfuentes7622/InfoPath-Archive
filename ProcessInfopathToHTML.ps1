@@ -858,7 +858,9 @@ Write-Stage -Group Input -Message "Discovered XML files: $($xmlFiles.Count)"
 
 $processedCount = 0
 $xsnMatches = [System.Collections.Generic.List[object]]::new()
-$referenceResolutions = [System.Collections.Generic.List[object]]::new()
+$referenceAuditPath = [System.IO.Path]::GetFullPath((Join-Path $OutputDirectory 'InfoPathReferenceResolutions.csv'))
+'"SourceFilePath","XPath","StoredValue","DisplayValue","Status","Source","ReferenceKey","Message"' | Set-Content -LiteralPath $referenceAuditPath -Encoding UTF8
+Write-Stage -Group Input -Message "Reference-resolution audit: $referenceAuditPath"
 $pdfCount = 0
 $failedCount = 0
 $errorLogEntries = New-Object System.Collections.Generic.List[string]
@@ -957,9 +959,16 @@ foreach ($xmlFile in $xmlFiles) {
 
 		Export-HtmlFieldAttachments -Document $xmlDocument -Configuration $fieldRules -SourceFileDirectory $xmlFile.DirectoryName -SourceRoot $InfoPathDirectory -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
 		$xsnMatch = Find-XsnTemplate -Document $xmlDocument -Inventory $xsnInventory
-		$referenceStart = $referenceResolutions.Count
-		Set-HtmlReferenceValues -Document $xmlDocument -ReferenceData $referenceData -Audit $referenceResolutions -SourceFilePath $xmlFile.FullName -XsnMatch $xsnMatch
-		$unresolvedReferences = @($referenceResolutions | Select-Object -Skip $referenceStart | Where-Object Status -ne 'Resolved')
+		$referenceResolutions = [System.Collections.Generic.List[object]]::new()
+		try {
+			Set-HtmlReferenceValues -Document $xmlDocument -ReferenceData $referenceData -Audit $referenceResolutions -SourceFilePath $xmlFile.FullName -XsnMatch $xsnMatch
+		}
+		finally {
+			if ($referenceResolutions.Count -gt 0) {
+				$referenceResolutions | Export-Csv -LiteralPath $referenceAuditPath -Append -NoTypeInformation -Encoding UTF8
+			}
+		}
+		$unresolvedReferences = @($referenceResolutions | Where-Object Status -ne 'Resolved')
 		if ($unresolvedReferences.Count -gt 0) {
 			Write-Stage -Group Warn -Message "$($xmlFile.Name): $($unresolvedReferences.Count) unresolved/ambiguous reference(s); original values retained. See InfoPathReferenceResolutions.csv."
 		}
@@ -1092,14 +1101,6 @@ if ($errorLogEntries.Count -eq 0) {
 
 $errorLogEntries | Set-Content -LiteralPath $ErrorLogPath -Encoding UTF8
 $xsnMatches | Export-Csv -LiteralPath (Join-Path -Path $OutputDirectory -ChildPath 'InfoPathXsnMatches.csv') -NoTypeInformation -Encoding UTF8
-$referenceAuditPath = Join-Path $OutputDirectory 'InfoPathReferenceResolutions.csv'
-if ($referenceResolutions.Count -gt 0) {
-	$referenceResolutions | Export-Csv -LiteralPath $referenceAuditPath -NoTypeInformation -Encoding UTF8
-}
-else {
-	'"SourceFilePath","XPath","StoredValue","DisplayValue","Status","Source","ReferenceKey","Message"' | Set-Content -LiteralPath $referenceAuditPath -Encoding UTF8
-}
-
 Write-Stage -Group Done -Message "XML files processed to HTML: $processedCount"
 Write-Stage -Group Done -Message "Output folder: $OutputDirectory"
 Write-Stage -Group Warn -Message "Failed files: $failedCount"

@@ -157,7 +157,13 @@ XML, before using an exported label. Existing explicit HTML field-rule value
 mappings remain intentional overrides. Unresolved, missing, or conflicting
 values stay readable as their original codes/accounts, with a warning and
 details in `Html\InfoPathReferenceResolutions.csv`. That audit records reference
-resolution before any explicit field-rule override. List keys are scoped to
+resolution before any explicit field-rule override. The report is initialized
+at the start of rendering and each file's rows are appended and closed before
+its reference warning, HTML generation, or PDF printing. It can be opened while
+the batch is running, and already-written rows remain if processing is stopped.
+Each new rendering run resets the report rather than appending stale rows from
+an earlier run. The console reports its full path once at startup.
+List keys are scoped to
 site/list and value column; user IDs are scoped to a site collection. Login
 matching preserves claims-provider identities; only the known Windows claims
 prefix is treated as equivalent to its `DOMAIN\user` form.
@@ -987,6 +993,9 @@ site-scoped user IDs, Windows claims aliases, saved person names, explicit
 field-rule overrides, ambiguous/missing references, package-hash agreement,
 and both generated/XSN HTML paths. It also checks raw radio selection tests,
 unchanged XML/CSV, partial-export handling, and reference CSV path containment.
+It reads the audit at the first warning in a two-file run to verify per-file
+persistence before rendering finishes, and checks reruns for duplicate rows,
+duplicate headers, and stale records when no reference bundle is supplied.
 Supply `-ExtractedSampleDirectory` to additionally verify dependency discovery
 and all four Country labels through the extracted sample's actual XSN view.
 With an installed supported browser, `-PrintToPdf` also checks PDF generation

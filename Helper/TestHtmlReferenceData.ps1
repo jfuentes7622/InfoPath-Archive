@@ -177,6 +177,35 @@ try {
     Assert-Reference ((Get-FileHash $csv.FullName).Hash -eq $normalizedBefore) 'Step 7 changed normalized CSV.'
     Assert-Reference ((Get-FileHash $xmlPath).Hash -eq $originalHash) 'Source XML changed.'
 
+    $liveSource = Join-Path $testRoot 'LiveSource'
+    $liveOutput = Join-Path $testRoot 'LiveOutput'
+    New-Item $liveSource -ItemType Directory | Out-Null
+    Copy-Item $xmlPath (Join-Path $liveSource 'First.xml')
+    Copy-Item $xmlPath (Join-Path $liveSource 'Second.xml')
+    $liveAuditPath = Join-Path $liveOutput 'Html\InfoPathReferenceResolutions.csv'
+    $liveAuditState = [pscustomobject]@{ Observed = $false; Existed = $false; Rows = @() }
+    & (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') -SourceDirectory $liveSource -OutputRootDirectory $liveOutput `
+        -StartStep 1 -FieldRulesPath $rulesPath -ReferenceDataPath $bundle 6>&1 | ForEach-Object {
+            if (-not $liveAuditState.Observed -and $_.ToString() -like '*unresolved/ambiguous reference(s)*') {
+                $liveAuditState.Existed = Test-Path -LiteralPath $liveAuditPath -PathType Leaf
+                if ($liveAuditState.Existed) { $liveAuditState.Rows = @(Import-Csv -LiteralPath $liveAuditPath) }
+                $liveAuditState.Observed = $true
+            }
+        }
+    Assert-Reference ($liveAuditState.Observed -and $liveAuditState.Existed) 'Reference audit was not created before its warning was printed.'
+    Assert-Reference ($liveAuditState.Rows.Count -eq $audit.Count) 'Current file reference rows were not flushed before its warning.'
+    Assert-Reference (@($liveAuditState.Rows.SourceFilePath | Select-Object -Unique).Count -eq 1) 'Live audit contains unexpected files.'
+    Assert-Reference (@(Import-Csv -LiteralPath $liveAuditPath).Count -eq ($audit.Count * 2)) 'Incremental audit lost records from either file.'
+    & (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') -SourceDirectory $liveSource -OutputRootDirectory $liveOutput `
+        -StartStep 7 -FieldRulesPath $rulesPath -ReferenceDataPath $bundle 6>$null
+    $resumedRows = @(Import-Csv -LiteralPath $liveAuditPath)
+    Assert-Reference ($resumedRows.Count -eq ($audit.Count * 2)) 'Rerun duplicated or lost reference rows.'
+    Assert-Reference (@($resumedRows.SourceFilePath | Select-Object -Unique).Count -eq 2) 'Rerun did not retain both files in the audit.'
+    Assert-Reference (@(Get-Content -LiteralPath $liveAuditPath | Where-Object { $_ -like '"SourceFilePath",*' }).Count -eq 1) 'Incremental audit contains duplicate headers.'
+    & (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') -SourceDirectory $liveSource -OutputRootDirectory $liveOutput `
+        -StartStep 7 -FieldRulesPath $rulesPath 6>$null
+    Assert-Reference (@(Import-Csv -LiteralPath $liveAuditPath).Count -eq 0) 'Run without reference data retained stale audit rows.'
+
     $scopedData = Import-HtmlReferenceData $bundle
     $scopedData.Users[0].Entry.SourceSiteUrls = @('http://sharepoint/sites/OtherCollection')
     $scopedAudit = [System.Collections.Generic.List[object]]::new()
