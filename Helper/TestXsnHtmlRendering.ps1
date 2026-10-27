@@ -85,7 +85,7 @@ try {
         ConfiguredBy='Library'; SharePointVersion='1.0'; IsCurrentVersion='True'; Modified='2026-10-27'
         XsnRelativePath='template.xsn'; Status='Success'; Error=''
     } | Export-Csv $exportCsv -NoTypeInformation
-    foreach ($mode in @('Xsn', 'Default', 'Missing', 'Broken', 'NextVersion')) {
+    foreach ($mode in @('Xsn', 'Default', 'Missing', 'Broken', 'NextVersion', 'NoHigherVersion', 'OtherForm')) {
         $output = Join-Path $testRoot $mode
         $parameters = @{
             SourceDirectory=$source; OutputRootDirectory=$output; StartStep=1; FieldRulesPath=$rulesPath
@@ -93,14 +93,21 @@ try {
         }
         if ($mode -ne 'Missing') { $parameters.XsnExportCsvPath = $exportCsv }
         if ($mode -eq 'Broken') { $parameters.XsnExportCsvPath = Join-Path $package 'missing.csv' }
-        if ($mode -eq 'NextVersion') {
-            $versionSource = Join-Path $testRoot 'VersionSource'
+        if ($mode -in @('NextVersion', 'NoHigherVersion', 'OtherForm')) {
+            $versionSource = Join-Path $testRoot ($mode + 'Source')
             New-Item $versionSource -ItemType Directory | Out-Null
-            (Get-Content (Join-Path $source 'Sample.xml') -Raw).Replace('solutionVersion="1.0.0.1"', 'solutionVersion="1.0.0.0"') |
-                Set-Content (Join-Path $versionSource 'Sample.xml') -Encoding UTF8
+            $versionXml = Get-Content (Join-Path $source 'Sample.xml') -Raw
+            if ($mode -eq 'OtherForm') {
+                $versionXml = $versionXml.Replace('name="urn:archive:test"', 'name="urn:archive:other"')
+            }
+            else {
+                $requestedVersion = if ($mode -eq 'NextVersion') { '1.0.0.0' } else { '1.0.0.2' }
+                $versionXml = $versionXml.Replace('solutionVersion="1.0.0.1"', ('solutionVersion="' + $requestedVersion + '"'))
+            }
+            $versionXml | Set-Content (Join-Path $versionSource 'Sample.xml') -Encoding UTF8
             $parameters.SourceDirectory = $versionSource
         }
-        if ($PrintToPdf -and $mode -eq 'Xsn') { $parameters.PrintToPdf = 'true' }
+        if ($PrintToPdf -and $mode -in @('Xsn', 'NextVersion')) { $parameters.PrintToPdf = 'true' }
         & (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') @parameters 6>$null
         $htmlPath = Join-Path $output 'Html\Sample.html'
         $html = Get-Content $htmlPath -Raw
@@ -125,7 +132,23 @@ try {
                 if ($pdf.Length -lt 1000 -or [System.Text.Encoding]::ASCII.GetString($pdf, 0, 5) -ne '%PDF-' -or -not $audit.PdfPath) { throw 'XSN PDF output or audit is invalid.' }
             }
         }
+        elseif ($mode -eq 'NextVersion') {
+            if ($audit.ActualRenderer -ne 'XSN' -or $audit.MatchStatus -ne 'NextVersion' -or
+                $audit.RequestedVersion -ne '1.0.0.0' -or $audit.MatchedVersion -ne '1.0.0.1' -or
+                $audit.ViewName -ne 'Archive' -or $audit.FallbackReason -or -not $html.Contains('Original form layout')) {
+                throw 'Nearest-higher XSN view was not rendered or audited correctly.'
+            }
+            if ($PrintToPdf) {
+                $pdf = [System.IO.File]::ReadAllBytes((Join-Path $output 'Html\Sample.pdf'))
+                if ($pdf.Length -lt 1000 -or [System.Text.Encoding]::ASCII.GetString($pdf, 0, 5) -ne '%PDF-' -or -not $audit.PdfPath) {
+                    throw 'Nearest-higher XSN PDF output or audit is invalid.'
+                }
+            }
+        }
         elseif ($audit.ActualRenderer -ne 'Generated' -or ($mode -ne 'Default' -and -not $audit.FallbackReason)) { throw "$mode fallback audit is incorrect." }
+        if ($mode -in @('NoHigherVersion', 'OtherForm') -and $audit.MatchStatus -ne 'NoMatch') {
+            throw "$mode incorrectly matched an older or different form's template."
+        }
         $csv = @(Get-ChildItem (Join-Path $output 'Reports\Normalized') -Filter Main.csv -Recurse)[0]
         if (-not (Get-Content $csv.FullName -Raw).Contains('2026-10-27')) { throw 'CSV data was reformatted.' }
     }
@@ -172,7 +195,7 @@ try {
         if ((Get-Item $sampleHtml).Length -lt 10000 -or $sampleText -match '(?i)<input|<select|<script|display\s*:\s*none|visibility\s*:\s*hidden') { throw 'Extracted sample rendering failed static-output checks.' }
         Write-Host "PASS: Extracted sample view '$viewName'; $(@(Get-ChildItem (Join-Path $sampleOutput 'Assets') -File -Recurse).Count) local assets."
     }
-    Write-Host 'PASS: XSN CAB rendering, stored values, show-all sections, static selections, resources, JSON formats, CSV independence, and fallback.'
+    Write-Host 'PASS: XSN CAB rendering, exact/nearest-higher matching, older/different-form exclusion, stored values, show-all sections, static selections, resources, JSON formats, CSV independence, and fallback.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }

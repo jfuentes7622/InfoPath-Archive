@@ -41,7 +41,8 @@
     Default: false
 
 .PARAMETER UseXSN4HTML
-    Prefer the matched exact-version XSN view for read-only archival HTML.
+    Prefer the matched exact-version XSN view for read-only archival HTML,
+    otherwise the nearest higher solution version of the same form.
     Falls back to generated HTML with a warning and audit reason. Default: $false.
 
 .PARAMETER FieldRulesPath

@@ -67,7 +67,8 @@
 	when UseDisplayName is true. Writes InfoPathXsnMatches.csv under OutputDirectory.
 
 .PARAMETER UseXSN4HTML
-	Prefer the exact-version XSN view for static archival HTML. Missing or unsupported
+	Prefer the exact-version XSN view, otherwise the nearest higher version of the
+	same form, for static archival HTML. Missing or unsupported
 	views fall back to generated HTML with a warning and an audit reason. Default: $false.
 
 .EXAMPLE
@@ -964,7 +965,9 @@ foreach ($xmlFile in $xmlFiles) {
 		$renderedWithXsn = $false
 		if ($UseXSN4HTML) {
 			try {
-				if ($xsnMatch.Status -ne 'ExactVersion') { throw "No exact-version XSN view match ($($xsnMatch.Status))." }
+				if ($xsnMatch.Status -notin @('ExactVersion', 'NextVersion')) {
+					throw "No same-form XSN view at the requested version or higher ($($xsnMatch.Status))."
+				}
 				$template = $xsnMatch.Template
 				if ($template.Row.PSObject.Properties.Name -notcontains 'ResourcesRelativePath' -or -not $template.Row.ResourcesRelativePath) {
 					throw 'XSN rendering resources are missing. Rerun step 1 with -UseXSN4HTML $true.'

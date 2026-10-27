@@ -388,7 +388,7 @@ Update:
 | `-Recurse` | No | Off | Include XML files in source subfolders. |
 | `-MaxFilesToAnalyze` | No | `5` | Sample files analyzed per version; accepts `1` through `100`. |
 | `-PrintToPdf` | No | `"false"` | Print HTML to PDF; accepts `yes`, `no`, `true`, `false`, `1`, or `0`. |
-| `-UseXSN4HTML` | No | `$false` | Prefer an exact-version XSN view, falling back to generated HTML with a warning and audit reason. |
+| `-UseXSN4HTML` | No | `$false` | Prefer an exact-version XSN view, otherwise the nearest higher version of the same form; fall back to generated HTML if unavailable or unsupported. |
 | `-FieldRulesPath` | No | None | JSON field types, formats, and stored/display mappings for HTML/PDF. |
 
 `-UseXSN4HTML` is a Boolean parameter, so explicitly pass `$true` or `$false`.
@@ -421,8 +421,11 @@ with `-ExtractResources`.
 
 The dedicated [XsnHtmlRendering.ps1](./Helper/XsnHtmlRendering.ps1) renderer:
 
-- Requires an exact solution-version match for the same form using the existing
-  identity matching rules; nearest-higher matching remains for captions only.
+- Prefers an exact solution-version match for the same form using the existing
+  identity matching rules. If absent, uses the nearest available higher numeric
+  solution version for both the view and captions, never an older version or
+  another form. `NextVersion` messages identify the requested and selected versions;
+  they do not mean the renderer has fallen back to generated HTML.
 - Selects the manifest's default view and reuses its layout and captions.
 - Replaces bound controls with stored values formatted by HTML field rules.
   Checkboxes/radio buttons use static `[X]`/`[ ]` and `(X)`/`( )` markers,
@@ -439,7 +442,7 @@ The dedicated [XsnHtmlRendering.ps1](./Helper/XsnHtmlRendering.ps1) renderer:
   Keep the entire HTML output folder together when moving the archive.
 - Uses the same PDF printing process as generated HTML.
 
-Missing XSNs, non-exact matches, missing assets, or unsupported view features
+Missing same-form XSNs at the requested version or higher, missing assets, or unsupported view features
 produce a warning and generated-layout fallback. `Html\InfoPathXsnMatches.csv`
 records `RequestedRenderer`, `ActualRenderer`, `ViewName`, `FallbackReason`,
 HTML/PDF paths, and errors alongside template-match details. XSN preparation
