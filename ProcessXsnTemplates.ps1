@@ -15,7 +15,9 @@
     any rows failed. Source files and the download inventory are not modified.
 
 .PARAMETER InputCsvPath
-    Path to the copied SPS export's XsnTemplateDownloads.csv.
+    Path to the copied SPS export's XsnTemplateDownloads.csv, its containing
+    folder, or a parent folder. Folder inputs are searched recursively and must
+    contain exactly one download inventory. XSN paths remain relative to that CSV.
 
 .PARAMETER OutputDirectory
     Folder for processed XSN information. The pipeline uses its XSNTemplates folder.
@@ -188,10 +190,23 @@ $failedCount = 0
 
 try {
     Write-XsnMessage -Group Init -Message "Processing local XSN export: $InputCsvPath"
-    if (-not (Test-Path -LiteralPath $InputCsvPath -PathType Leaf)) {
+    $inventoryPath = $InputCsvPath
+    if (Test-Path -LiteralPath $InputCsvPath -PathType Container) {
+        $inventories = @(Get-ChildItem -LiteralPath $InputCsvPath -Filter 'XsnTemplateDownloads.csv' -File -Recurse -ErrorAction Stop |
+            Sort-Object FullName)
+        if ($inventories.Count -eq 0) {
+            throw "No XsnTemplateDownloads.csv was found under XSN export folder: $InputCsvPath"
+        }
+        if ($inventories.Count -gt 1) {
+            throw "Multiple XSN download inventories were found under '$InputCsvPath'. Supply the specific CSV path or a folder containing only one export. Candidates: $($inventories.FullName -join '; ')"
+        }
+        $inventoryPath = $inventories[0].FullName
+    }
+    if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) {
         throw "XSN download inventory not found: $InputCsvPath"
     }
-    $inputPath = (Resolve-Path -LiteralPath $InputCsvPath).Path
+    $inputPath = (Resolve-Path -LiteralPath $inventoryPath).Path
+    Write-XsnMessage -Group Init -Message "Resolved XSN download inventory: $inputPath"
     if ($inputPath -eq $csvPath) {
         throw 'The download inventory and processed inventory must be different files.'
     }

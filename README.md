@@ -60,6 +60,12 @@ machine. Keep their relative layout. The pipeline does not use the original
 server's absolute paths, so the copied export can be on a different drive or
 machine without editing the CSV.
 
+`-XsnExportCsvPath` accepts the CSV itself, its containing folder, or a parent
+folder such as `C:\ScriptTesting\XSNTemplates`. Folder inputs are searched
+recursively for `XsnTemplateDownloads.csv`. Exactly one inventory must be found;
+if multiple timestamped exports exist, supply the specific export folder or CSV.
+The discovered CSV's directory remains the base for its relative XSN paths.
+
 ```powershell
 .\RunInfoPathPipeline.ps1 `
   -SourceDirectory "D:\Data\InfoPathXml" `
@@ -152,7 +158,8 @@ Script: [ProcessXsnTemplates.ps1](./ProcessXsnTemplates.ps1)
 
 Input:
 
-- `-InputCsvPath`: the copied `XsnTemplateDownloads.csv`.
+- `-InputCsvPath`: the copied `XsnTemplateDownloads.csv`, its containing folder,
+  or a parent folder containing exactly one inventory recursively.
 - XSN files beside the CSV, located using its `XsnRelativePath` column.
 - `-OutputDirectory`: the pipeline's `XSNTemplates` output folder.
 
@@ -377,7 +384,7 @@ Update:
 | `-SourceDirectory` | Yes | None | Root folder containing InfoPath XML files. |
 | `-OutputRootDirectory` | Yes | None | Root folder for reports, analysis, XSN information, XSLT templates, and HTML. |
 | `-StartStep` | No | Prompt (`1`) | Start at step `1` through `7`, then run all remaining steps. Supplying this parameter bypasses the prompt. |
-| `-XsnExportCsvPath` | No | None | Copied `XsnTemplateDownloads.csv`; step 1 processes its XSNs under `XSNTemplates`. Omit to explicitly skip XSN processing. |
+| `-XsnExportCsvPath` | No | None | Copied `XsnTemplateDownloads.csv` or a folder containing exactly one such inventory recursively; step 1 processes its XSNs under `XSNTemplates`. Omit to explicitly skip XSN processing. |
 | `-Recurse` | No | Off | Include XML files in source subfolders. |
 | `-MaxFilesToAnalyze` | No | `5` | Sample files analyzed per version; accepts `1` through `100`. |
 | `-PrintToPdf` | No | `"false"` | Print HTML to PDF; accepts `yes`, `no`, `true`, `false`, `1`, or `0`. |

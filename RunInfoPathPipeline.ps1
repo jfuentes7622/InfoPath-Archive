@@ -50,7 +50,9 @@
 
 .PARAMETER XsnExportCsvPath
     Optional path to XsnTemplateDownloads.csv copied from the SPS export along
-    with its XSN files. Step 1 extracts manifest information on this machine
+    with its XSN files, or a folder containing exactly one such CSV anywhere
+    beneath it. Multiple inventories require an explicit selection by path.
+    Step 1 extracts manifest information on this machine
     and view captions into OutputRootDirectory\XSNTemplates. Steps 6 and 7 use
     that inventory for labels. With UseXSN4HTML, also extracts rendering assets.
     Preparation errors warn and continue without XSNs, preserving CSV extraction.

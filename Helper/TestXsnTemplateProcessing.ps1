@@ -42,12 +42,12 @@ function New-TestCab {
 }
 
 function Invoke-TestProcessing {
-    param([string]$Case, [string]$ExpectedError = '')
+    param([string]$Case, [string]$ExpectedError = '', [string]$InputPath = $copiedCsv)
 
     $output = Join-Path -Path $testRoot -ChildPath $Case
     $caught = ''
     try {
-        & $processor -InputCsvPath $copiedCsv -OutputDirectory $output 6>$null
+        & $processor -InputCsvPath $InputPath -OutputDirectory $output 6>$null
     }
     catch {
         $caught = $_.Exception.Message
@@ -128,6 +128,26 @@ try {
     if ((Get-FileHash -LiteralPath $copiedCsv).Hash -ne $originalCsvHash) {
         throw 'Processing modified the download inventory.'
     }
+    foreach ($inputFolder in @($copiedExport, $testRoot)) {
+        $folderRows = @(Invoke-TestProcessing -Case 'FolderInput' -InputPath $inputFolder)
+        if ($folderRows.Count -ne 3 -or @($folderRows | Where-Object Status -ne 'Success').Count -ne 0 -or
+            @($folderRows | Where-Object { -not $_.XsnPath.StartsWith($copiedExport + '\') }).Count -ne 0) {
+            throw 'Folder input did not discover the inventory or resolve XSN files relative to the discovered CSV.'
+        }
+    }
+    $emptyExport = Join-Path $testRoot 'EmptyExport'
+    New-Item -Path $emptyExport -ItemType Directory | Out-Null
+    $null = Invoke-TestProcessing -Case 'NoInventory' -InputPath $emptyExport -ExpectedError '*No XsnTemplateDownloads.csv was found*'
+    $duplicateExport = Join-Path $copiedExport 'AnotherExport'
+    New-Item -Path $duplicateExport -ItemType Directory | Out-Null
+    $duplicateCsv = Join-Path $duplicateExport 'XsnTemplateDownloads.csv'
+    Copy-Item -LiteralPath $copiedCsv -Destination $duplicateCsv
+    $null = Invoke-TestProcessing -Case 'AmbiguousInventory' -InputPath $copiedExport -ExpectedError '*Multiple XSN download inventories*'
+    $explicitRows = @(Invoke-TestProcessing -Case 'ExplicitInventory' -InputPath $copiedCsv)
+    if ($explicitRows.Count -ne 3 -or @($explicitRows | Where-Object Status -ne 'Success').Count -ne 0) {
+        throw 'An explicit CSV path did not disambiguate multiple exports.'
+    }
+    Remove-Item -LiteralPath $duplicateCsv
 
     $currentPath = Join-Path -Path $copiedExport -ChildPath $downloadRows[0].XsnRelativePath
     [System.IO.File]::WriteAllBytes($currentPath, [System.Text.Encoding]::UTF8.GetBytes('not a cabinet'))
@@ -174,7 +194,7 @@ try {
 '@ | Set-Content -LiteralPath (Join-Path -Path $source -ChildPath 'Sample.xml') -Encoding UTF8
     $pipelineOutput = Join-Path -Path $testRoot -ChildPath 'PipelineOutput'
     & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') `
-        -SourceDirectory $source -OutputRootDirectory $pipelineOutput -XsnExportCsvPath $copiedCsv -StartStep 1 6>$null
+        -SourceDirectory $source -OutputRootDirectory $pipelineOutput -XsnExportCsvPath $testRoot -StartStep 1 6>$null
     $pipelineInventory = Join-Path -Path $pipelineOutput -ChildPath 'XSNTemplates\XsnTemplateVersions.csv'
     if (-not (Test-Path -LiteralPath $pipelineInventory) -or
         @(Import-Csv -LiteralPath $pipelineInventory).Count -ne 3 -or
@@ -201,7 +221,7 @@ try {
         -not (Test-Path -LiteralPath (Join-Path -Path $failedPipelineOutput -ChildPath 'Html\Sample.html'))) {
         throw 'Failed optional XSN processing prevented CSV extraction or generated HTML.'
     }
-    Write-Host 'PASS: Local manifest processing, relocated exports, output folders, hashes, partial failures, stale-output protection, and seven-step pipeline.'
+    Write-Host 'PASS: Local manifest processing, recursive folder discovery, ambiguous/missing inventories, explicit CSV selection, relocated exports, output folders, hashes, partial failures, stale-output protection, and seven-step pipeline.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {
