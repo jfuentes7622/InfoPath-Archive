@@ -6,6 +6,8 @@
     This script connects to a SharePoint site, reads items from a document library recursively,
     and saves files to a local destination while preserving folder structure. Includes colored
     console progress output and automatic log file generation.
+    Preserves successfully downloaded files and throws after the batch if any
+    file could not be saved, so callers cannot mistake partial downloads for success.
 
 .PARAMETER SiteUrl
     The SharePoint site URL (on-premises).
@@ -284,10 +286,19 @@ finally {
 
     $logEntries | Set-Content -LiteralPath $logPath -Encoding UTF8
 
-    Write-Stage -Group Done -Message "Completed library download."
+    if ($totalErrors -gt 0) {
+        Write-Stage -Group Warn -Message "Library download finished with errors; successful files are retained."
+    }
+    else {
+        Write-Stage -Group Done -Message "Completed library download."
+    }
     Write-Host "Items scanned : $totalItemsScanned" -ForegroundColor Magenta
     Write-Host "Files saved   : $totalFilesSaved" -ForegroundColor Green
     Write-Host "Files skipped : $totalFilesSkipped" -ForegroundColor DarkGray
     Write-Host "Errors        : $totalErrors" -ForegroundColor Red
     Write-Host "Log file      : $logPath" -ForegroundColor Magenta
+}
+
+if ($totalErrors -gt 0) {
+    throw "Library download incomplete: $totalErrors error(s). Successful files are retained. See '$logPath'."
 }

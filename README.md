@@ -21,14 +21,148 @@ SharePoint retrieval/metadata steps are not part of local orchestration:
 
 Run these separately on SPS when needed, then run the local pipeline against the downloaded XML directory.
 
+### Recommended: one SPS export pipeline and transfer folder
+
+[RunInfoPathPipeline_SPS.ps1](./RunInfoPathPipeline_SPS.ps1) coordinates all five
+server-preparation steps so no manual path handoffs or server/offline round
+trips are needed:
+
+1. Download library files and preserve their folder structure.
+2. Export library metadata.
+3. Download configured XSN templates and retained versions.
+4. Discover lookup dependencies, automatically extracting manifests/views
+   temporarily on SPS.
+5. Export referenced lookup lists and site-collection user information.
+
+Run in **Windows PowerShell 5.1 / SharePoint Management Shell on SPS**, using
+an account authorized for the library and referenced webs/lists. Copy the
+script folder together, including all child scripts and `Helper`. Step 4 uses
+Windows `expand.exe`; InfoPath and XSN managed-code execution are not required.
+
+```powershell
+.\RunInfoPathPipeline_SPS.ps1 `
+  -SiteUrl "http://sharepoint/sites/Finance" `
+  -LibraryName "Applications" `
+  -OutputRootDirectory "D:\SPExports"
+```
+
+Each invocation creates a **new timestamped bundle** under the specified parent:
+
+```text
+InfoPathExport_<timestamp>_<id>\
+  ExportManifest.json
+  Export.log
+  Export.lock
+  Xml\                            # Library files, original folders, download log
+  Metadata\LibraryMetadata.csv
+  XSNTemplates\XsnTemplates_<run>\ # Original download inventory and versioned XSNs
+  Dependencies\                   # Dependency JSON and extraction/discovery logs
+  ReferenceData\XsnReferences_<run>\
+    Manifest.json
+    List_*.csv
+    Users_*.csv
+    Export.log
+```
+
+Copy the **entire outer bundle** offline, keeping nested directories intact.
+`ExportManifest.json` records source site/library, options, per-step status and
+errors, UTC timestamps, and **relative paths to the active outputs**. These paths
+remain valid after moving the bundle, including after retries create additional
+timestamped child exports. `Export.lock` is only a local concurrency guard; it
+contains no data and is closed when the run finishes.
+
+**Failures do not stop collection of independent data.** Available partial XSN
+inventories/dependency reports are used for later steps where possible. Steps
+with missing prerequisite artifacts are explicitly `Blocked`. A failed, blocked,
+or unfinished requested step makes the bundle `Incomplete`, and the script throws
+after attempting the remaining steps. Successful files and partial reports are
+retained; never treat an incomplete bundle as a complete archive. Library-file
+download errors now also throw after saving their log and successful downloads,
+rather than allowing the orchestrator to report partial downloads as success.
+
+#### Resume or retry on SPS
+
+Resume the same bundle from its first failed/unfinished step:
+
+```powershell
+.\RunInfoPathPipeline_SPS.ps1 `
+  -ResumeExportDirectory "D:\SPExports\InfoPathExport_20261027_191800_12345678"
+```
+
+Or explicitly rerun a step and all later steps:
+
+```powershell
+# Retry discovery/reference export without downloading forms or XSNs again.
+.\RunInfoPathPipeline_SPS.ps1 `
+  -ResumeExportDirectory "D:\SPExports\InfoPathExport_20261027_191800_12345678" `
+  -StartStep 4
+```
+
+Resume restores the original source and options. Earlier failures are not erased
+when resuming a later step. Completed bundles require an explicit `-StartStep` to
+rerun; they are not silently re-exported. Progress is saved after every step with
+atomic manifest replacement. Only one run may update a particular bundle at once.
+Keep the bundle on SPS until collection finishes; then transfer it offline.
+
+Additional options:
+
+- `-PageSize` (default 500, range 1-10000): library and reference-data paging.
+- `-IncludeFolders`: include folder items in metadata; file downloads always
+  preserve their original folder hierarchy.
+- `-Overwrite`: replace existing downloaded files when retrying step 1.
+- `-UserSiteUrl`: explicit owning-web override for dependency discovery.
+- `-SkipXsn`: intentionally export only files and metadata; steps 3-5 are
+  recorded as `Skipped`, not failed. This preserves XML-only archival workflows.
+  To add XSN data later, resume with `-StartStep 3 -SkipXsn:$false`.
+
+Resuming retains already downloaded files; it is not a new point-in-time
+snapshot. Use a new bundle when a fresh collection is needed. List/user exports
+are current data, not historical labels, and the overall collection is not
+transactional across changes made to SharePoint during the run. Protect the
+entire bundle as form data and personal information; no credentials are stored.
+
+#### Process a moved bundle offline
+
+Read the selected paths from its manifest rather than guessing which nested
+timestamped export to use:
+
+```powershell
+$bundle = "D:\Data\InfoPathExport_20261027_191800_12345678"
+$export = Get-Content (Join-Path $bundle "ExportManifest.json") -Raw | ConvertFrom-Json
+if ($export.Status -ne "Complete") {
+    Write-Warning "Bundle status is $($export.Status). Review step errors before processing a partial archive."
+}
+
+$parameters = @{
+    SourceDirectory = Join-Path $bundle $export.Paths.XmlDirectory
+    OutputRootDirectory = "D:\Data\PipelineOutput"
+    Recurse = $true
+    StartStep = 1
+}
+if ($export.Paths.XsnInventoryCsv) {
+    $parameters.XsnExportCsvPath = Join-Path $bundle $export.Paths.XsnInventoryCsv
+    $parameters.UseXSN4HTML = $true
+}
+if ($export.Paths.ReferenceDataDirectory) {
+    $parameters.ReferenceDataPath = Join-Path $bundle $export.Paths.ReferenceDataDirectory
+}
+.\RunInfoPathPipeline.ps1 @parameters
+```
+
+Inspect any `Incomplete` status and step errors before choosing to process a
+partial bundle. Source library metadata is retained as a separate record; the
+local pipeline still creates its own classification, grouping, and normalized
+CSV reports. The individual server scripts below remain available independently.
+
 ### Export the library's XSN template versions
 
 Run [GetLibraryXsnVersions_SPS.ps1](./GetLibraryXsnVersions_SPS.ps1) locally on a
 SharePoint Server in **Windows PowerShell 5.1 / SharePoint Management Shell**,
 using an account with access to the library, its configured templates, and
 their version histories. Requires the `Microsoft.SharePoint.PowerShell`
-snap-in. The server performs downloads only; it does not require `expand.exe`
-or InfoPath and does not inspect XSN contents.
+snap-in. This downloader performs downloads only; it does not require
+`expand.exe` or InfoPath and does not inspect XSN contents. The SPS orchestrator
+performs temporary extraction later, during dependency discovery.
 
 ```powershell
 .\GetLibraryXsnVersions_SPS.ps1 `
@@ -954,6 +1088,7 @@ Run the integration checks from the repository root:
 .\Helper\TestHtmlReferenceData.ps1
 .\Helper\TestXsnReferenceExport.ps1
 .\Helper\TestXsnReferenceDownloadDiscovery.ps1
+.\Helper\TestSpsPipeline.ps1
 ```
 
 [TestUseDisplayName.ps1](./Helper/TestUseDisplayName.ps1) verifies pipeline label
@@ -1014,6 +1149,13 @@ checks direct download-inventory/CAB inputs, recursive folder discovery, all
 versions/views, original package hashes, partial/corrupt downloads, ambiguous
 export folders, actionable output-path errors, retained diagnostics, and
 temporary-directory cleanup on success and failure.
+
+[TestSpsPipeline.ps1](./Helper/TestSpsPipeline.ps1) checks the SPS orchestrator
+with isolated child-script stubs: ordered steps, portable/timestamped bundles,
+option forwarding, failed and blocked steps, partial-result handoffs, automatic
+and explicit resume, relocation, concurrency protection, and XML-only exports.
+It also verifies the actual downloader's batch-error reporting using an
+in-process SharePoint facade. These offline tests do not replace a live SPS run.
 
 ### Orchestrator output layout
 
