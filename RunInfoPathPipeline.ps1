@@ -49,6 +49,10 @@
     Optional JSON field definitions, DateFormat, DateTimeFormat, and display-value mappings for HTML output.
     Passed to template generation and HTML rendering; CSV extraction is unchanged.
 
+.PARAMETER ReferenceDataPath
+    Optional offline reference-data export folder or Manifest.json for HTML
+    lookup labels and user names. Does not change normalized CSV extraction.
+
 .PARAMETER XsnExportCsvPath
     Optional path to XsnTemplateDownloads.csv copied from the SPS export along
     with its XSN files, or a folder containing exactly one such CSV anywhere
@@ -93,6 +97,8 @@ param(
     [bool]$UseXSN4HTML = $false,
 
     [string]$FieldRulesPath,
+
+    [string]$ReferenceDataPath,
 
     [ValidateRange(1, 7)]
     [int]$StartStep = 1,
@@ -183,7 +189,7 @@ $steps = @(
         Name = "Transform InfoPath XML to HTML"
         Script = "ProcessInfopathToHTML.ps1"
         Action = {
-            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseXSN4HTML $UseXSN4HTML -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
+            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseXSN4HTML $UseXSN4HTML -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath -ReferenceDataPath $ReferenceDataPath
         }
     }
 )

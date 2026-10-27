@@ -165,7 +165,7 @@ function Convert-HtmlDateValue {
 }
 
 function Get-HtmlMappedValue {
-	param([string]$Value, [psobject]$Rule)
+	param([string]$Value, [psobject]$Rule, [System.Xml.XmlElement]$Node)
 
 	$values = Get-HtmlRuleProperty -Rule $Rule -Name 'Values'
 	if ($null -ne $values) {
@@ -173,6 +173,9 @@ function Get-HtmlMappedValue {
 		if ($null -ne $property) {
 			return [string]$property.Value
 		}
+	}
+	if ($null -ne $Node -and $Value -ceq $Node.InnerText -and $Node.HasAttribute('reference-value', 'urn:infopath-archive:display')) {
+		return $Node.GetAttribute('reference-value', 'urn:infopath-archive:display')
 	}
 	return $Value
 }
@@ -377,7 +380,7 @@ function Convert-HtmlFieldValues {
 			}
 			{ $_ -in @('Choice', 'MultiChoice', 'Dropdown', 'Radio', 'Lookup') } {
 				$parts = Get-HtmlChoiceValues -Value $value -StripLookupIds:($type -eq 'Lookup')
-				$labels = @($parts | ForEach-Object { Get-HtmlMappedValue -Value $_ -Rule $rule })
+				$labels = @($parts | ForEach-Object { Get-HtmlMappedValue -Value $_ -Rule $rule -Node $node })
 				Set-HtmlDisplayValue -Node $node -Value ($labels -join ', ')
 			}
 			'Person' {
@@ -398,11 +401,11 @@ function Convert-HtmlFieldValues {
 							$names.Add($display.InnerText)
 						}
 						elseif ($null -ne $account -and -not [string]::IsNullOrWhiteSpace($account.InnerText)) {
-							$names.Add((Get-HtmlMappedValue -Value $account.InnerText -Rule $rule))
+							$names.Add((Get-HtmlMappedValue -Value $account.InnerText -Rule $rule -Node $account))
 						}
 					}
 				}
-				if ($names.Count -eq 0) { $names.Add((Get-HtmlMappedValue -Value $value -Rule $rule)) }
+				if ($names.Count -eq 0) { $names.Add((Get-HtmlMappedValue -Value $value -Rule $rule -Node $node)) }
 				Set-HtmlDisplayValue -Node $node -Value ($names -join '; ')
 			}
 			'Signature' {
@@ -454,11 +457,21 @@ function Convert-HtmlFieldValues {
 			default { Set-HtmlDisplayValue -Node $node -Value $value }
 		}
 	}
+	foreach ($person in @($Document.SelectNodes("//*[local-name()='Person' and *[local-name()='AccountId']]"))) {
+		$account = $person.SelectSingleNode("*[local-name()='AccountId']")
+		if (-not $account.HasAttribute('reference-value', $displayNamespace) -or
+			$null -ne $person.SelectSingleNode("ancestor-or-self::*[$formattingXPath or @*[namespace-uri()='$displayNamespace' and local-name()='kind']]") -or
+			@($person.SelectNodes('descendant-or-self::*') | Where-Object { $selectedRules.ContainsKey($_) }).Count -gt 0) { continue }
+		Set-HtmlDisplayValue -Node $person -Value $account.GetAttribute('reference-value', $displayNamespace)
+	}
 	foreach ($node in $Document.SelectNodes("//*[not(*) and not(ancestor-or-self::*[$formattingXPath])]")) {
 		if ($node.HasAttribute('kind', $displayNamespace) -or $node.NamespaceURI -eq $displayNamespace) { continue }
 		$value = $node.InnerText
 		if ([string]::IsNullOrWhiteSpace($value)) { continue }
-		if ($value.StartsWith('ATTACHMENT::')) {
+		if ($node.HasAttribute('reference-value', $displayNamespace)) {
+			Set-HtmlDisplayValue -Node $node -Value $node.GetAttribute('reference-value', $displayNamespace)
+		}
+		elseif ($value.StartsWith('ATTACHMENT::')) {
 			$url = $value.Substring(12)
 			Set-HtmlHyperlink -Node $node -Url $url -Label (($url -replace '\\', '/').Split('/')[-1]) -Attachment
 		}

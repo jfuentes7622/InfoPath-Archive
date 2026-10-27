@@ -17,6 +17,7 @@ SharePoint retrieval/metadata steps are not part of local orchestration:
 - `MoveLibraryFilesToLocal_SPS.ps1`
 - `GetMetadataforLib_SPS.ps1`
 - [GetLibraryXsnVersions_SPS.ps1](./GetLibraryXsnVersions_SPS.ps1)
+- [GetXsnReferenceData_SPS.ps1](./GetXsnReferenceData_SPS.ps1) (optional reference snapshots)
 
 Run these separately on SPS when needed, then run the local pipeline against the downloaded XML directory.
 
@@ -51,6 +52,93 @@ The script:
   not extracted or validated as an InfoPath package.
 - Continues with other versions/templates after an individual failure, preserves
   the partial inventory, and throws if any downloads failed.
+
+### Optional offline lookup labels and user names
+
+The local HTML pipeline can consume a read-only SharePoint reference-data
+snapshot. Neither HTML renderer authenticates to SharePoint or runs XSN code.
+This option affects HTML/PDF display only; source XML and normalized CSVs retain
+their stored values. It remains optional, including when XSN rendering is off.
+
+1. Export XSN versions using the server downloader above, then copy the entire
+   export to the processing machine.
+2. Extract templates locally and discover dependencies from their manifests and
+   declared views:
+
+   ```powershell
+   .\ProcessXsnTemplates.ps1 `
+     -InputCsvPath "D:\Data\XsnExport" `
+     -OutputDirectory "D:\Data\PipelineOutput\XSNTemplates" `
+     -ExtractResources
+
+   .\GetXsnReferenceDependencies.ps1 `
+     -XsnInventoryCsvPath "D:\Data\PipelineOutput\XSNTemplates\XsnTemplateVersions.csv" `
+     -OutputPath "D:\Data\ReferenceDependencies.json"
+   ```
+
+3. Copy the dependency JSON to SharePoint Server and run the companion exporter
+   in Windows PowerShell 5.1 / SharePoint Management Shell under an authorized
+   account:
+
+   ```powershell
+   .\GetXsnReferenceData_SPS.ps1 `
+     -DependencyManifestPath "D:\SPExports\ReferenceDependencies.json" `
+     -LocalPath "D:\SPExports\ReferenceData"
+   ```
+
+4. Copy the **entire resulting reference-data export folder** back to the
+   processing machine. Pass that folder, or its `Manifest.json`, to the pipeline:
+
+   ```powershell
+   .\RunInfoPathPipeline.ps1 `
+     -SourceDirectory "D:\Data\InfoPathXml" `
+     -OutputRootDirectory "D:\Data\PipelineOutput" `
+     -ReferenceDataPath "D:\Data\ReferenceDataExport" `
+     -UseXSN4HTML $true `
+     -StartStep 7
+   ```
+
+   Step 7 assumes the earlier pipeline outputs already exist. For a first full
+   run, use `-StartStep 1` and supply `-XsnExportCsvPath` as usual. Omit
+   `-UseXSN4HTML` to apply the same reference data to generated HTML. The copied
+   dependency definitions let generated HTML resolve values even without the
+   original XSN packages on that machine.
+
+[GetXsnReferenceDependencies.ps1](./GetXsnReferenceDependencies.ps1) records
+template identities/versions, namespaces, list connections, requested internal
+columns, and supported bound value/display pairs across views. Country-style
+controls can store `Value` and display `Title`; the exporter does not assume
+every lookup uses `ID`. Review discovery warnings before exporting: unsupported
+expressions are not guessed.
+
+[GetXsnReferenceData_SPS.ps1](./GetXsnReferenceData_SPS.ps1) exports paged list
+snapshots and site-collection user information, retaining source/provenance,
+row counts, status, errors, and UTC export time in `Manifest.json`. Reused
+connections are deduplicated. It does not create users, change SharePoint data,
+expand groups, or query Active Directory. Partial exports remain available for
+inspection, but export failures are reported explicitly.
+
+Resolution prefers saved display text, including matching cached rows in the
+XML, before using an exported label. Existing explicit HTML field-rule value
+mappings remain intentional overrides. Unresolved, missing, or conflicting
+values stay readable as their original codes/accounts, with a warning and
+details in `Html\InfoPathReferenceResolutions.csv`. That audit records reference
+resolution before any explicit field-rule override. List keys are scoped to
+site/list and value column; user IDs are scoped to a site collection. Login
+matching preserves claims-provider identities; only the known Windows claims
+prefix is treated as equivalent to its `DOMAIN\user` form.
+
+Reference definitions follow the same exact/nearest-higher template selection
+policy as XSN matching. When a processed XSN is selected, the reference definition
+must agree with that selected version and package hash when available; missing
+or ambiguous definitions are not substituted silently.
+
+**Archival and privacy limits:** this is a current snapshot, not proof of the
+label a list or user displayed years ago. Stored display text is stronger
+historical evidence. Deleted or inaccessible users/items may remain unresolved.
+Protect these exports like the form data: they contain list contents and user
+identities, but no credentials. Keep a reference bundle with the archival output
+if later reproducibility is required.
 
 ### Process the copied XSN export on the pipeline machine
 
@@ -326,6 +414,7 @@ Input:
 - `-DateFormat` (optional, defaults to `MM/dd/yyyy`; HTML display only)
 - `-DateTimeFormat` (optional, defaults to `MM/dd/yyyy HH:mm`; HTML display only)
 - `-FieldRulesPath` (optional; use the same JSON definitions as Stage 6)
+- `-ReferenceDataPath` (optional offline reference-data folder or `Manifest.json`)
 - `-XsnInventoryCsvPath` (optional; the pipeline supplies Stage 1's inventory)
 - `-UseXSN4HTML` (optional Boolean, defaults to `$false`; prefer the XSN view)
 - `-Recurse` (optional)
@@ -337,6 +426,7 @@ Output:
 - Copied CSS assets
 - `ProcessInfopathToHTML-errors.log`
 - `InfoPathXsnMatches.csv`
+- `InfoPathReferenceResolutions.csv` (header-only when reference resolution is unused)
 - `FailedInfoPathFiles` folder for failures
 
 HTML display behavior:
@@ -406,6 +496,7 @@ Update:
 | `-PrintToPdf` | No | `"false"` | Print HTML to PDF; accepts `yes`, `no`, `true`, `false`, `1`, or `0`. |
 | `-UseXSN4HTML` | No | `$false` | Prefer an exact-version XSN view, otherwise the nearest higher version of the same form; fall back to generated HTML if unavailable or unsupported. |
 | `-FieldRulesPath` | No | None | JSON field types, formats, and stored/display mappings for HTML/PDF. |
+| `-ReferenceDataPath` | No | None | Offline list/user export folder or `Manifest.json`; affects HTML/PDF only. |
 
 `-UseXSN4HTML` is a Boolean parameter, so explicitly pass `$true` or `$false`.
 `-Recurse` is a switch. Pipeline labels are always readable; date formats now
@@ -820,6 +911,8 @@ Run the integration checks from the repository root:
 .\Helper\TestRichTextRendering.ps1
 .\Helper\TestCustomerFieldRendering.ps1
 .\Helper\TestXsnHtmlRendering.ps1 -PrintToPdf
+.\Helper\TestHtmlReferenceData.ps1
+.\Helper\TestXsnReferenceExport.ps1
 ```
 
 [TestUseDisplayName.ps1](./Helper/TestUseDisplayName.ps1) verifies pipeline label
@@ -852,6 +945,22 @@ the customer field rules, mappings and unresolved values, blank fields,
 file-reference/base64 attachments, signature summaries, multiline text,
 standalone overrides, configuration validation, unchanged source XML/CSVs, and
 real browser PDF generation. A supported browser must be installed.
+
+[TestHtmlReferenceData.ps1](./Helper/TestHtmlReferenceData.ps1) checks offline
+stored-value/display-column mappings, list isolation, saved cached labels,
+site-scoped user IDs, Windows claims aliases, saved person names, explicit
+field-rule overrides, ambiguous/missing references, package-hash agreement,
+and both generated/XSN HTML paths. It also checks raw radio selection tests,
+unchanged XML/CSV, partial-export handling, and reference CSV path containment.
+Supply `-ExtractedSampleDirectory` to additionally verify dependency discovery
+and all four Country labels through the extracted sample's actual XSN view.
+With an installed supported browser, `-PrintToPdf` also checks PDF generation
+from both reference-enabled HTML paths.
+
+[TestXsnReferenceExport.ps1](./Helper/TestXsnReferenceExport.ps1) exercises
+dependency discovery and the SPS exporter with an in-process SharePoint facade,
+including paging, deduplication, partial failures, and object disposal. This
+does not replace an authorized integration run on a live SharePoint Server.
 
 ### Orchestrator output layout
 

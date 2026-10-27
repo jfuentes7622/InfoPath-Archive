@@ -61,6 +61,11 @@
 	Optional JSON field definitions and stored/display mappings for HTML only.
 	Use the same definitions when building templates.
 
+.PARAMETER ReferenceDataPath
+	Optional offline SPS reference-data folder or Manifest.json for lookup labels
+	and user names in either HTML renderer. Unresolved values remain unchanged
+	and are reported in InfoPathReferenceResolutions.csv. No SharePoint calls.
+
 .PARAMETER XsnInventoryCsvPath
 	Optional processed XSN inventory. Matches each file to its same-form exact
 	solutionVersion or nearest higher version and applies available XSN captions
@@ -147,6 +152,8 @@ param(
 
 	[string]$FieldRulesPath,
 
+	[string]$ReferenceDataPath,
+
 	[string]$XsnInventoryCsvPath,
 
 	[bool]$UseXSN4HTML = $false
@@ -157,6 +164,8 @@ $ErrorActionPreference = "Stop"
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnTemplates.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnHtmlRendering.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlReferenceData.ps1')
+$referenceData = Import-HtmlReferenceData -Path $ReferenceDataPath
 $fieldRules = Import-HtmlFieldRules -Path $FieldRulesPath
 if (-not $PSBoundParameters.ContainsKey('DateFormat')) { $DateFormat = $fieldRules.DateFormat }
 if (-not $PSBoundParameters.ContainsKey('DateTimeFormat')) { $DateTimeFormat = $fieldRules.DateTimeFormat }
@@ -849,6 +858,7 @@ Write-Stage -Group Input -Message "Discovered XML files: $($xmlFiles.Count)"
 
 $processedCount = 0
 $xsnMatches = [System.Collections.Generic.List[object]]::new()
+$referenceResolutions = [System.Collections.Generic.List[object]]::new()
 $pdfCount = 0
 $failedCount = 0
 $errorLogEntries = New-Object System.Collections.Generic.List[string]
@@ -946,9 +956,15 @@ foreach ($xmlFile in $xmlFiles) {
 		}
 
 		Export-HtmlFieldAttachments -Document $xmlDocument -Configuration $fieldRules -SourceFileDirectory $xmlFile.DirectoryName -SourceRoot $InfoPathDirectory -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
+		$xsnMatch = Find-XsnTemplate -Document $xmlDocument -Inventory $xsnInventory
+		$referenceStart = $referenceResolutions.Count
+		Set-HtmlReferenceValues -Document $xmlDocument -ReferenceData $referenceData -Audit $referenceResolutions -SourceFilePath $xmlFile.FullName -XsnMatch $xsnMatch
+		$unresolvedReferences = @($referenceResolutions | Select-Object -Skip $referenceStart | Where-Object Status -ne 'Resolved')
+		if ($unresolvedReferences.Count -gt 0) {
+			Write-Stage -Group Warn -Message "$($xmlFile.Name): $($unresolvedReferences.Count) unresolved/ambiguous reference(s); original values retained. See InfoPathReferenceResolutions.csv."
+		}
 		$xsnDocument = if ($UseXSN4HTML) { $xmlDocument.CloneNode($true) } else { $null }
 		Convert-HtmlFieldValues -Document $xmlDocument -Configuration $fieldRules -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat
-		$xsnMatch = Find-XsnTemplate -Document $xmlDocument -Inventory $xsnInventory
 		$matchRow.RequestedVersion = $xsnMatch.RequestedVersion
 		$matchRow.SourceSolutionName = $xsnMatch.SolutionName
 		$matchRow.SourceTemplateHref = $xsnMatch.Href
@@ -1076,6 +1092,13 @@ if ($errorLogEntries.Count -eq 0) {
 
 $errorLogEntries | Set-Content -LiteralPath $ErrorLogPath -Encoding UTF8
 $xsnMatches | Export-Csv -LiteralPath (Join-Path -Path $OutputDirectory -ChildPath 'InfoPathXsnMatches.csv') -NoTypeInformation -Encoding UTF8
+$referenceAuditPath = Join-Path $OutputDirectory 'InfoPathReferenceResolutions.csv'
+if ($referenceResolutions.Count -gt 0) {
+	$referenceResolutions | Export-Csv -LiteralPath $referenceAuditPath -NoTypeInformation -Encoding UTF8
+}
+else {
+	'"SourceFilePath","XPath","StoredValue","DisplayValue","Status","Source","ReferenceKey","Message"' | Set-Content -LiteralPath $referenceAuditPath -Encoding UTF8
+}
 
 Write-Stage -Group Done -Message "XML files processed to HTML: $processedCount"
 Write-Stage -Group Done -Message "Output folder: $OutputDirectory"

@@ -92,6 +92,9 @@ function Assert-ResumeRun {
         if ($bound.PSObject.Properties.Name -contains 'UseXSN4HTML' -and $bound.UseXSN4HTML -ne $true) {
             throw "UseXSN4HTML was not forwarded to $($call.Script)."
         }
+        if ($call.Script -eq 'ProcessInfopathToHTML.ps1' -and $bound.ReferenceDataPath -ne [string]$Parameters['ReferenceDataPath']) {
+            throw 'ReferenceDataPath was not forwarded to HTML rendering.'
+        }
         if ($bound.PSObject.Properties.Name -contains 'Recurse' -and -not $bound.Recurse.IsPresent) {
             throw "Recurse was not forwarded to $($call.Script)."
         }
@@ -121,7 +124,7 @@ param(
     [string]$MappingCsvPath, [bool]$UseDisplayName, [string]$FieldRulesPath,
     [string]$MetadataCsvPath, [string]$TemplateMappingCsvPath, [string]$PrintToPdf,
     [string]$DateFormat, [string]$DateTimeFormat, [string]$XsnInventoryCsvPath,
-    [bool]$UseXSN4HTML, [switch]$ExtractResources
+    [bool]$UseXSN4HTML, [switch]$ExtractResources, [string]$ReferenceDataPath
 )
 $name = Split-Path -Path $PSCommandPath -Leaf
 @{ Script = $name; Parameters = $PSBoundParameters } | ConvertTo-Json -Depth 5 -Compress |
@@ -140,6 +143,7 @@ if ((Test-Path -LiteralPath $failure) -and (Get-Content -LiteralPath $failure) -
         OutputRootDirectory = $outputPath
         Recurse = $true
         UseXSN4HTML = $true
+        ReferenceDataPath = (Join-Path $testRoot 'References\Manifest.json')
         XsnExportCsvPath = (Join-Path -Path $testRoot -ChildPath 'Export\XsnTemplateDownloads.csv')
     }
     foreach ($start in 1..7) {
@@ -151,6 +155,7 @@ if ((Test-Path -LiteralPath $failure) -and (Get-Content -LiteralPath $failure) -
     Assert-ResumeRun -ExpectedStart 4 -Parameters $parameters -Answers @('0', '8', '-1', 'abc', '2.5', '9999999999999999', '4')
     $xmlOnlyParameters = $parameters.Clone()
     $xmlOnlyParameters.Remove('XsnExportCsvPath')
+    $xmlOnlyParameters.Remove('ReferenceDataPath')
     Assert-ResumeRun -ExpectedStart 1 -Parameters ($xmlOnlyParameters + @{ StartStep = 1 })
     foreach ($invalid in @(0, 8)) {
         $rejected = $false
