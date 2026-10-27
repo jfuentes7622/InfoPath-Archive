@@ -60,25 +60,37 @@ snapshot. Neither HTML renderer authenticates to SharePoint or runs XSN code.
 This option affects HTML/PDF display only; source XML and normalized CSVs retain
 their stored values. It remains optional, including when XSN rendering is off.
 
-1. Export XSN versions using the server downloader above, then copy the entire
-   export to the processing machine.
-2. Extract templates locally and discover dependencies from their manifests and
-   declared views:
+**Collect everything on SPS first; no pipeline run or server/offline round trip
+is needed to obtain reference data.**
+
+1. On SPS, export XSN versions using the server downloader above.
+2. Still on SPS, discover dependencies directly from that download export:
 
    ```powershell
-   .\ProcessXsnTemplates.ps1 `
-     -InputCsvPath "D:\Data\XsnExport" `
-     -OutputDirectory "D:\Data\PipelineOutput\XSNTemplates" `
-     -ExtractResources
-
    .\GetXsnReferenceDependencies.ps1 `
-     -XsnInventoryCsvPath "D:\Data\PipelineOutput\XSNTemplates\XsnTemplateVersions.csv" `
-     -OutputPath "D:\Data\ReferenceDependencies.json"
+     -XsnExportCsvPath "D:\SPExports\Templates\XsnTemplates_20261027_101341_179ba7ca" `
+     -OutputPath "D:\SPExports\ReferenceDependencies.json"
    ```
 
-3. Copy the dependency JSON to SharePoint Server and run the companion exporter
-   in Windows PowerShell 5.1 / SharePoint Management Shell under an authorized
-   account:
+   Replace the example timestamped folder with your actual export folder.
+   `-XsnExportCsvPath` also accepts `XsnTemplateDownloads.csv` itself, or a parent
+   containing exactly one download inventory recursively. Multiple exports
+   require selecting a specific folder/CSV.
+
+   Discovery automatically calls the existing XSN processor to extract only
+   manifests/views and metadata into a unique temporary folder. Windows
+   `expand.exe` is required; InfoPath is not. It does not execute package code,
+   load DLLs, contact SharePoint, or alter the original download export. Temporary
+   extraction is removed on success and failure; dependency JSON and its adjacent
+   `.log` retain results and preparation diagnostics. Keep
+   `ProcessXsnTemplates.ps1` and the `Helper` folder alongside the discovery
+   script on SPS (copying the script folder together is recommended).
+
+   **`-OutputPath` is a JSON filename, not a folder.** Its parent folders are
+   created automatically.
+
+3. Still on SPS, run the companion exporter in Windows PowerShell 5.1 /
+   SharePoint Management Shell under an authorized account:
 
    ```powershell
    .\GetXsnReferenceData_SPS.ps1 `
@@ -86,23 +98,41 @@ their stored values. It remains optional, including when XSN rendering is off.
      -LocalPath "D:\SPExports\ReferenceData"
    ```
 
-4. Copy the **entire resulting reference-data export folder** back to the
-   processing machine. Pass that folder, or its `Manifest.json`, to the pipeline:
+4. Copy the **original complete XSN download export**, the **complete
+   reference-data export folder**, and the downloaded form XML to the offline
+   processing machine. No return to SPS is required. For a first pipeline run:
 
    ```powershell
    .\RunInfoPathPipeline.ps1 `
      -SourceDirectory "D:\Data\InfoPathXml" `
      -OutputRootDirectory "D:\Data\PipelineOutput" `
+     -XsnExportCsvPath "D:\Data\XsnExport" `
      -ReferenceDataPath "D:\Data\ReferenceDataExport" `
      -UseXSN4HTML $true `
-     -StartStep 7
+     -StartStep 1
    ```
 
-   Step 7 assumes the earlier pipeline outputs already exist. For a first full
-   run, use `-StartStep 1` and supply `-XsnExportCsvPath` as usual. Omit
-   `-UseXSN4HTML` to apply the same reference data to generated HTML. The copied
-   dependency definitions let generated HTML resolve values even without the
-   original XSN packages on that machine.
+   Local pipeline step 1 prepares its own persistent XSN metadata and rendering
+   resources; it does not depend on the server's deleted temporary extraction.
+   If earlier pipeline outputs already exist, resume with `-StartStep 7`.
+   Omit `-UseXSN4HTML` to apply the same reference data to generated HTML. The
+   copied dependency definitions let generated HTML resolve values even without
+   the original XSN packages on that machine.
+
+Existing input modes remain available without new extraction:
+
+```powershell
+# Previously processed inventory.
+.\GetXsnReferenceDependencies.ps1 `
+  -XsnInventoryCsvPath "D:\Data\PipelineOutput\XSNTemplates\XsnTemplateVersions.csv" `
+  -OutputPath "D:\Data\ReferenceDependencies.json"
+
+# Already-extracted individual XSN.
+.\GetXsnReferenceDependencies.ps1 `
+  -ExtractedXsnDirectory "D:\Data\InfopathData\XSNSample" `
+  -TemplateUrl "http://sharepoint/sites/Finance/Applications/Forms/template.xsn" `
+  -OutputPath "D:\Data\ReferenceDependencies.json"
+```
 
 [GetXsnReferenceDependencies.ps1](./GetXsnReferenceDependencies.ps1) records
 template identities/versions, namespaces, list connections, requested internal
@@ -913,6 +943,7 @@ Run the integration checks from the repository root:
 .\Helper\TestXsnHtmlRendering.ps1 -PrintToPdf
 .\Helper\TestHtmlReferenceData.ps1
 .\Helper\TestXsnReferenceExport.ps1
+.\Helper\TestXsnReferenceDownloadDiscovery.ps1
 ```
 
 [TestUseDisplayName.ps1](./Helper/TestUseDisplayName.ps1) verifies pipeline label
@@ -961,6 +992,12 @@ from both reference-enabled HTML paths.
 dependency discovery and the SPS exporter with an in-process SharePoint facade,
 including paging, deduplication, partial failures, and object disposal. This
 does not replace an authorized integration run on a live SharePoint Server.
+
+[TestXsnReferenceDownloadDiscovery.ps1](./Helper/TestXsnReferenceDownloadDiscovery.ps1)
+checks direct download-inventory/CAB inputs, recursive folder discovery, all
+versions/views, original package hashes, partial/corrupt downloads, ambiguous
+export folders, actionable output-path errors, retained diagnostics, and
+temporary-directory cleanup on success and failure.
 
 ### Orchestrator output layout
 

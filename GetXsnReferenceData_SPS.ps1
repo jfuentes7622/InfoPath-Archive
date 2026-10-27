@@ -3,7 +3,9 @@
     Exports current lookup lists and site-collection user information read-only.
 .DESCRIPTION
     Run on SharePoint Server with Windows PowerShell 5.1. Reads a dependency
-    manifest produced locally by GetXsnReferenceDependencies.ps1. Each run creates
+    manifest produced by GetXsnReferenceDependencies.ps1 on this server (directly
+    from the downloaded XSN export), or from previously extracted templates.
+    Each run creates
     a new timestamped folder containing Manifest.json, CSV data and Export.log.
     No SharePoint changes, EnsureUser, directory/AD calls or credentials are used.
     User Information List reads include retained rows where SharePoint exposes
@@ -17,6 +19,17 @@
     be used as complete snapshots. No external modules are required.
 .PARAMETER LocalPath
     Parent folder for a new timestamped export folder.
+.EXAMPLE
+    .\GetXsnReferenceDependencies.ps1 `
+      -XsnExportCsvPath "D:\SPExports\Templates\XsnTemplates_20261027_101341_179ba7ca" `
+      -OutputPath "D:\SPExports\ReferenceDependencies.json"
+    .\GetXsnReferenceData_SPS.ps1 `
+      -DependencyManifestPath "D:\SPExports\ReferenceDependencies.json" `
+      -LocalPath "D:\SPExports\ReferenceData"
+
+    Run both commands on SPS after GetLibraryXsnVersions_SPS.ps1. Discovery
+    temporarily extracts manifests/views; no offline pipeline run is needed.
+    Copy the original XSN export and the complete reference-data export offline.
 #>
 #requires -Version 5.1
 [CmdletBinding()]
