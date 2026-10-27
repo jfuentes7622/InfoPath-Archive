@@ -302,11 +302,28 @@ function Find-XsnTemplate {
     $requested = Get-XsnSolutionAttribute -Document $Document -Name 'solutionVersion'
     $name = Get-XsnSolutionAttribute -Document $Document -Name 'name'
     $href = Get-XsnSolutionAttribute -Document $Document -Name 'href'
-    $result = [pscustomobject]@{ RequestedVersion = $requested; SolutionName = $name; Href = $href; Status = 'NoMatch'; Template = $null; Message = '' }
+    $result = [pscustomobject]@{
+        RequestedVersion = $requested; SolutionName = $name; Href = $href
+        Status = 'NoMatch'; Template = $null; Message = ''
+        MatchBasis = ''; LinkedTemplateVersions = ''; LinkedTemplateMessage = ''
+    }
     if ($Inventory.Count -eq 0) {
         $result.Status = 'NoInventory'
         $result.Message = 'No XSN inventory supplied; using XML-name labels.'
         return $result
+    }
+    $linkedTemplates = @()
+    if ($href) {
+        $linkedTemplates = @($Inventory | Where-Object {
+            $_.Row.TemplateUrl -ieq $href -or ($href.StartsWith('/') -and ([uri]$_.Row.TemplateUrl).AbsolutePath -ieq $href)
+        })
+        $result.LinkedTemplateVersions = (@($linkedTemplates | Select-Object -ExpandProperty Version | Sort-Object -Unique) -join ', ')
+        $result.LinkedTemplateMessage = if ($linkedTemplates.Count -gt 0) {
+            "Linked template '$href': available processed solutionVersion(s) $($result.LinkedTemplateVersions); XML requests '$requested'."
+        }
+        else {
+            "Linked template '$href': no successful processed inventory entry at this URL; XML requests '$requested'."
+        }
     }
     $version = $null
     if (-not [version]::TryParse($requested, [ref]$version)) {
@@ -316,6 +333,7 @@ function Find-XsnTemplate {
     $candidates = @($Inventory)
     if ($name) {
         $candidates = @($candidates | Where-Object { $_.Row.SolutionName -ceq $name })
+        $result.MatchBasis = 'SolutionName'
     }
     elseif (-not $href) {
         $result.Message = 'No form identity or template href; using XML-name labels.'
@@ -325,17 +343,38 @@ function Find-XsnTemplate {
         $exactUrls = @($candidates | Where-Object {
             $_.Row.TemplateUrl -ieq $href -or ($href.StartsWith('/') -and ([uri]$_.Row.TemplateUrl).AbsolutePath -ieq $href)
         })
-        if (-not $name -and $exactUrls.Count -gt 0) { $candidates = $exactUrls }
+        if (-not $name -and $exactUrls.Count -gt 0) {
+            $candidates = $exactUrls
+            $result.MatchBasis = 'TemplateUrl'
+        }
         elseif (-not $name) {
             $leaf = [System.IO.Path]::GetFileName(($href -split '\?')[0])
             $byName = @($candidates | Where-Object { [uri]::UnescapeDataString([System.IO.Path]::GetFileName(([uri]$_.Row.TemplateUrl).AbsolutePath)) -ieq [uri]::UnescapeDataString($leaf) })
             $families = @($byName | Group-Object { $_.Row.TemplateUrl + '|' + $_.Row.SolutionName })
-            if ($families.Count -eq 1) { $candidates = $byName } else { $candidates = @() }
+            if ($families.Count -eq 1) {
+                $candidates = $byName
+                $result.MatchBasis = 'TemplateFileName'
+            }
+            else { $candidates = @() }
         }
     }
     $eligible = @($candidates | Where-Object { $_.Version -ge $version } | Sort-Object Version)
+    if ($name -and $eligible.Count -eq 0 -and $linkedTemplates.Count -gt 0) {
+        $linkedEligible = @($linkedTemplates | Where-Object { $_.Version -ge $version } | Sort-Object Version)
+        $linkedIdentities = @($linkedEligible | Group-Object { $_.Row.SolutionName })
+        if ($linkedIdentities.Count -gt 1) {
+            $result.MatchBasis = ''
+            $result.Message = "XML form identity '$name' has no eligible match, and the linked template URL has ambiguous eligible form identities; using XML-name labels."
+            return $result
+        }
+        if ($linkedIdentities.Count -eq 1) {
+            $eligible = $linkedEligible
+            $result.MatchBasis = 'TemplateUrlIdentityFallback'
+        }
+    }
     if ($eligible.Count -eq 0) {
-        $result.Message = "No same-form XSN at solutionVersion $requested or higher; using XML-name labels."
+        $result.MatchBasis = ''
+        $result.Message = "No eligible XSN for XML form identity '$name' or its unambiguous linked template URL at solutionVersion $requested or higher; using XML-name labels."
         return $result
     }
     $nearestVersion = $eligible[0].Version
@@ -346,6 +385,7 @@ function Find-XsnTemplate {
     }
     $identities = @($nearest | Group-Object { $_.Row.SolutionName })
     if ($identities.Count -ne 1) {
+        $result.MatchBasis = ''
         $result.Message = "Ambiguous form identity at solutionVersion $nearestVersion; using XML-name labels."
         return $result
     }
@@ -356,7 +396,10 @@ function Find-XsnTemplate {
     ))[0]
     $result.Template = $selected
     $result.Status = if ($nearestVersion -eq $version) { 'ExactVersion' } else { 'NextVersion' }
-    $result.Message = "$($result.Status): requested $requested; using $($selected.Row.SolutionVersion) from $($selected.Row.TemplateUrl)."
+    $result.Message = "$($result.Status): requested $requested; using $($selected.Row.SolutionVersion) from $($selected.Row.TemplateUrl) (matched by $($result.MatchBasis); XSN form identity '$($selected.Row.SolutionName)')."
+    if ($result.MatchBasis -eq 'TemplateUrlIdentityFallback') {
+        $result.Message += " XML form identity '$name' differs; accepted the unambiguous exact template URL."
+    }
     return $result
 }
 

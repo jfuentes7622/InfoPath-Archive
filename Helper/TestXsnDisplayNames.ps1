@@ -126,6 +126,61 @@ try {
     if ((Convert-XsnBindingPath -Expression '/Form/Field' -Node $unprefixed.DocumentElement) -ne '/:Form/:Field') {
         throw 'Unprefixed XML field bindings were not resolved.'
     }
+    $renamedDocument = [System.Xml.XmlDocument]::new()
+    $renamedDocument.LoadXml('<?mso-infoPathSolution name="urn:form:Applications" solutionVersion="1.0.0.3416" href="http://sharepoint/forms/template.xsn"?><Form />')
+    $linkedRecord = [pscustomobject]@{
+        Version = [version]'1.0.0.3443'
+        SharePointVersion = [version]'1.0'
+        Row = [pscustomobject]@{
+            SolutionVersion = '1.0.0.3443'; SolutionName = 'urn:form:template'
+            TemplateUrl = 'http://sharepoint/forms/template.xsn'; Modified = '2026-10-27'
+        }
+    }
+    $renamedMatch = Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord)
+    if ($renamedMatch.Status -ne 'NextVersion' -or $renamedMatch.Template.Version -ne [version]'1.0.0.3443' -or
+        $renamedMatch.MatchBasis -ne 'TemplateUrlIdentityFallback' -or $renamedMatch.LinkedTemplateVersions -ne '1.0.0.3443' -or
+        $renamedMatch.LinkedTemplateMessage -notlike '*1.0.0.3443*1.0.0.3416*' -or
+        $renamedMatch.Message -notlike "*XML form identity 'urn:form:Applications' differs*") {
+        throw 'Renamed-form exact-URL fallback or linked-version diagnostics failed.'
+    }
+    $renamedInstruction = $renamedDocument.SelectSingleNode("/processing-instruction('mso-infoPathSolution')")
+    $originalInstruction = $renamedInstruction.Data
+    $renamedInstruction.Data = $originalInstruction.Replace('1.0.0.3416', '1.0.0.3443')
+    if ((Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord)).Status -ne 'ExactVersion') {
+        throw 'An exact-version renamed form did not match its exact template URL.'
+    }
+    $renamedInstruction.Data = $originalInstruction.Replace('http://sharepoint/forms/template.xsn', '/forms/template.xsn')
+    if ((Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord)).MatchBasis -ne 'TemplateUrlIdentityFallback') {
+        throw 'Server-relative exact-URL fallback failed for a renamed form.'
+    }
+    $renamedInstruction.Data = $originalInstruction.Replace('http://sharepoint/forms/template.xsn', 'http://sharepoint/unrelated/template.xsn')
+    if ((Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord)).Status -ne 'NoMatch') {
+        throw 'A mismatched form name incorrectly fell back using only a template filename.'
+    }
+    $renamedInstruction.Data = $originalInstruction
+    $conflictingRecord = [pscustomobject]@{
+        Version = [version]'1.0.0.3450'
+        SharePointVersion = [version]'1.0'
+        Row = [pscustomobject]@{
+            SolutionVersion = '1.0.0.3450'; SolutionName = 'urn:form:unrelated'
+            TemplateUrl = 'http://sharepoint/forms/template.xsn'; Modified = '2026-10-27'
+        }
+    }
+    $ambiguousMatch = Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord, $conflictingRecord)
+    if ($ambiguousMatch.Status -ne 'NoMatch' -or $ambiguousMatch.Message -notlike '*ambiguous*' -or
+        $ambiguousMatch.LinkedTemplateVersions -ne '1.0.0.3443, 1.0.0.3450') {
+        throw 'Ambiguous renamed-form candidates at one template URL were accepted or not diagnosed.'
+    }
+    $conflictingRecord.Row.SolutionName = 'urn:form:Applications'
+    $preferredMatch = Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord, $conflictingRecord)
+    if ($preferredMatch.MatchBasis -ne 'SolutionName' -or $preferredMatch.Template.Version -ne [version]'1.0.0.3450') {
+        throw 'An eligible explicit form identity did not take precedence over URL fallback.'
+    }
+    $linkedRecord.Version = [version]'1.0.0.3410'
+    $linkedRecord.Row.SolutionVersion = '1.0.0.3410'
+    if ((Find-XsnTemplate -Document $renamedDocument -Inventory @($linkedRecord)).Status -ne 'NoMatch') {
+        throw 'Renamed-form URL fallback selected an older template.'
+    }
     $exportRoot = Join-Path -Path $testRoot -ChildPath 'Export'
     New-Item -Path $exportRoot -ItemType Directory | Out-Null
     $downloads = @(

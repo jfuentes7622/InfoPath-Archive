@@ -118,9 +118,23 @@ preferred, then the highest SharePoint file version and latest modification
 date. Without a form identity, a template URL or unambiguous filename is
 required; ambiguous identities fall back to readable XML-name labels.
 
+If the XML's form name has no eligible version but its `href` matches an exact
+template URL, matching may use that URL despite a changed internal form name
+(for example, `Applications` versus `template`). The eligible URL-matched records
+must have one unambiguous form identity. Name-based matches remain preferred;
+the fallback never uses filename-only similarity when a conflicting name exists,
+and never selects an older version. Multiple eligible identities at the linked
+URL are rejected rather than guessed.
+
+Stage 7 logs the versions found in the successful processed inventory at the
+linked template URL, the XML's requested version, and the selected version/form
+identity. These are local inventory checks; the renderer does not contact the URL.
+
 `Html\InfoPathXsnMatches.csv` records each data file's requested version,
 identity, template href, exact/next-version/no-match result, selected version,
-XSN and label-map paths, applied-label count, and errors. The generated
+XSN and label-map paths, applied-label count, and errors. `MatchBasis`,
+`LinkedTemplateVersions`, and `MatchedSolutionName` make URL-based identity
+fallback and the available linked versions explicit. The generated
 `Templates\InfoPathXsltGroupMap.csv` also records the XSN selected for each
 template's sample. Runtime matching is per data file, not merely per group.
 

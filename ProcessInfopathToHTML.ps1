@@ -860,7 +860,10 @@ foreach ($xmlFile in $xmlFiles) {
 		SourceSolutionName = ''
 		SourceTemplateHref = ''
 		MatchStatus = 'NotProcessed'
+		MatchBasis = ''
+		LinkedTemplateVersions = ''
 		MatchedVersion = ''
+		MatchedSolutionName = ''
 		MatchedTemplateUrl = ''
 		MatchedXsnPath = ''
 		MatchedLabelsPath = ''
@@ -950,9 +953,12 @@ foreach ($xmlFile in $xmlFiles) {
 		$matchRow.SourceSolutionName = $xsnMatch.SolutionName
 		$matchRow.SourceTemplateHref = $xsnMatch.Href
 		$matchRow.MatchStatus = $xsnMatch.Status
+		$matchRow.MatchBasis = $xsnMatch.MatchBasis
+		$matchRow.LinkedTemplateVersions = $xsnMatch.LinkedTemplateVersions
 		$matchRow.Message = $xsnMatch.Message
 		if ($null -ne $xsnMatch.Template) {
 			$matchRow.MatchedVersion = $xsnMatch.Template.Row.SolutionVersion
+			$matchRow.MatchedSolutionName = $xsnMatch.Template.Row.SolutionName
 			$matchRow.MatchedTemplateUrl = $xsnMatch.Template.Row.TemplateUrl
 			$matchRow.MatchedXsnPath = $xsnMatch.Template.Row.XsnPath
 			$matchRow.MatchedLabelsPath = $xsnMatch.Template.LabelsPath
@@ -960,6 +966,9 @@ foreach ($xmlFile in $xmlFiles) {
 		$appliedLabels = Set-XsnDisplayLabels -Document $xmlDocument -Match $xsnMatch
 		$matchRow.AppliedLabelCount = if ($UseDisplayName) { $appliedLabels } else { 0 }
 		$matchGroup = if ($xsnMatch.Status -in @('NextVersion', 'NoMatch')) { 'Warn' } else { 'Resolve' }
+		if ($xsnMatch.LinkedTemplateMessage) {
+			Write-Stage -Group Resolve -Message "$($xmlFile.Name): $($xsnMatch.LinkedTemplateMessage)"
+		}
 		Write-Stage -Group $matchGroup -Message "$($xmlFile.Name): $($xsnMatch.Message)"
 
 		$renderedWithXsn = $false

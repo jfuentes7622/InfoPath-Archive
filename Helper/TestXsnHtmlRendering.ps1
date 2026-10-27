@@ -85,7 +85,7 @@ try {
         ConfiguredBy='Library'; SharePointVersion='1.0'; IsCurrentVersion='True'; Modified='2026-10-27'
         XsnRelativePath='template.xsn'; Status='Success'; Error=''
     } | Export-Csv $exportCsv -NoTypeInformation
-    foreach ($mode in @('Xsn', 'Default', 'Missing', 'Broken', 'NextVersion', 'NoHigherVersion', 'OtherForm')) {
+    foreach ($mode in @('Xsn', 'Default', 'Missing', 'Broken', 'NextVersion', 'RenamedNextVersion', 'NoHigherVersion', 'OtherForm')) {
         $output = Join-Path $testRoot $mode
         $parameters = @{
             SourceDirectory=$source; OutputRootDirectory=$output; StartStep=1; FieldRulesPath=$rulesPath
@@ -93,21 +93,22 @@ try {
         }
         if ($mode -ne 'Missing') { $parameters.XsnExportCsvPath = $exportCsv }
         if ($mode -eq 'Broken') { $parameters.XsnExportCsvPath = Join-Path $package 'missing.csv' }
-        if ($mode -in @('NextVersion', 'NoHigherVersion', 'OtherForm')) {
+        if ($mode -in @('NextVersion', 'RenamedNextVersion', 'NoHigherVersion', 'OtherForm')) {
             $versionSource = Join-Path $testRoot ($mode + 'Source')
             New-Item $versionSource -ItemType Directory | Out-Null
             $versionXml = Get-Content (Join-Path $source 'Sample.xml') -Raw
             if ($mode -eq 'OtherForm') {
-                $versionXml = $versionXml.Replace('name="urn:archive:test"', 'name="urn:archive:other"')
+                $versionXml = $versionXml.Replace('name="urn:archive:test"', 'name="urn:archive:other"').Replace('http://sharepoint/forms/test.xsn', 'http://sharepoint/other/test.xsn')
             }
             else {
-                $requestedVersion = if ($mode -eq 'NextVersion') { '1.0.0.0' } else { '1.0.0.2' }
+                $requestedVersion = if ($mode -in @('NextVersion', 'RenamedNextVersion')) { '1.0.0.0' } else { '1.0.0.2' }
                 $versionXml = $versionXml.Replace('solutionVersion="1.0.0.1"', ('solutionVersion="' + $requestedVersion + '"'))
+                if ($mode -eq 'RenamedNextVersion') { $versionXml = $versionXml.Replace('name="urn:archive:test"', 'name="urn:archive:renamed"') }
             }
             $versionXml | Set-Content (Join-Path $versionSource 'Sample.xml') -Encoding UTF8
             $parameters.SourceDirectory = $versionSource
         }
-        if ($PrintToPdf -and $mode -in @('Xsn', 'NextVersion')) { $parameters.PrintToPdf = 'true' }
+        if ($PrintToPdf -and $mode -in @('Xsn', 'NextVersion', 'RenamedNextVersion')) { $parameters.PrintToPdf = 'true' }
         & (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') @parameters 6>$null
         $htmlPath = Join-Path $output 'Html\Sample.html'
         $html = Get-Content $htmlPath -Raw
@@ -132,11 +133,16 @@ try {
                 if ($pdf.Length -lt 1000 -or [System.Text.Encoding]::ASCII.GetString($pdf, 0, 5) -ne '%PDF-' -or -not $audit.PdfPath) { throw 'XSN PDF output or audit is invalid.' }
             }
         }
-        elseif ($mode -eq 'NextVersion') {
+        elseif ($mode -in @('NextVersion', 'RenamedNextVersion')) {
             if ($audit.ActualRenderer -ne 'XSN' -or $audit.MatchStatus -ne 'NextVersion' -or
                 $audit.RequestedVersion -ne '1.0.0.0' -or $audit.MatchedVersion -ne '1.0.0.1' -or
                 $audit.ViewName -ne 'Archive' -or $audit.FallbackReason -or -not $html.Contains('Original form layout')) {
                 throw 'Nearest-higher XSN view was not rendered or audited correctly.'
+            }
+            $expectedBasis = if ($mode -eq 'RenamedNextVersion') { 'TemplateUrlIdentityFallback' } else { 'SolutionName' }
+            if ($audit.MatchBasis -ne $expectedBasis -or $audit.LinkedTemplateVersions -ne '1.0.0.1' -or
+                $audit.MatchedSolutionName -ne 'urn:archive:test') {
+                throw 'Template identity and linked-version diagnostics were not audited correctly.'
             }
             if ($PrintToPdf) {
                 $pdf = [System.IO.File]::ReadAllBytes((Join-Path $output 'Html\Sample.pdf'))
