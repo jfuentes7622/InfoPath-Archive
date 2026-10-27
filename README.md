@@ -5,7 +5,8 @@
 The pipeline processes local InfoPath XML files for two outputs:
 
 - Normalized CSV extraction for analytics and mapping.
-- HTML (and optional PDF) rendering using generated XSLT templates.
+- HTML (and optional PDF) rendering using generated XSLT templates, or optionally
+  the original XSN view adapted for a read-only archive.
 
 SharePoint scripts run separately from this local pipeline. The local orchestrator script is `RunInfoPathPipeline.ps1`.
 
@@ -86,8 +87,9 @@ Outputs are grouped under `OutputRootDirectory\XSNTemplates`:
 - `ProcessXsnTemplates.log`: local processing messages and errors.
 
 Failed downloads and invalid/missing packages remain failed in the processed
-inventory. Other packages are processed, then step 1 throws if any rows failed,
-preventing later pipeline steps from running. The source files and download CSV
+inventory. Other packages are processed, then the standalone processor throws
+if any rows failed. The orchestrator warns and continues without the XSN inventory
+for that run, preserving XML-driven CSV extraction and generated HTML. The source files and download CSV
 are not changed. If `-XsnExportCsvPath` is omitted, step 1 explicitly reports
 that it is skipped; XML-only runs remain supported. Steps 6 and 7 reuse an
 existing `XSNTemplates\XsnTemplateVersions.csv` when resuming without the
@@ -121,8 +123,9 @@ retained and accessible in SharePoint. It cannot recover deleted history,
 previously configured template URLs, or templates referenced only by old XML
 forms. If template history was not retained, only the current XSN may be
 available. The server downloader remains separate from the local pipeline.
-XSN captions are used in the generated archive HTML, but the original InfoPath
-layout, rules, and interactive behavior are not reproduced. Older exports without `XsnRelativePath` need to be
+By default, XSN captions are used in the generated archive HTML, but the original
+InfoPath layout is not reproduced. Use the optional XSN rendering path below to
+reuse its view layout without operational behavior. Older exports without `XsnRelativePath` need to be
 regenerated with the updated SPS downloader before using this workflow.
 Processed inventories created before caption extraction must be regenerated
 with step 1 before they can supply XSN labels.
@@ -301,6 +304,7 @@ Input:
 - `-DateTimeFormat` (optional, defaults to `MM/dd/yyyy HH:mm`; HTML display only)
 - `-FieldRulesPath` (optional; use the same JSON definitions as Stage 6)
 - `-XsnInventoryCsvPath` (optional; the pipeline supplies Stage 1's inventory)
+- `-UseXSN4HTML` (optional Boolean, defaults to `$false`; prefer the XSN view)
 - `-Recurse` (optional)
 
 Output:
@@ -316,7 +320,7 @@ HTML display behavior:
 
 - Readable field labels are enabled by default; use `-UseDisplayName $false` for internal XML names.
 - ISO date-only values display as `MM/dd/yyyy`; timestamps display as
-  `MM/dd/yyyy HH:mm`. Use `-DateFormat` and `-DateTimeFormat` respectively to override.
+  `MM/dd/yyyy HH:mm`. Configure JSON `DateFormat` and `DateTimeFormat` to override.
 - With newly generated templates, boolean values display as disabled checkboxes rather than `True`/`False` text.
 - These display changes do not modify the original XML files or normalized CSV output.
 
@@ -377,15 +381,70 @@ Update:
 | `-Recurse` | No | Off | Include XML files in source subfolders. |
 | `-MaxFilesToAnalyze` | No | `5` | Sample files analyzed per version; accepts `1` through `100`. |
 | `-PrintToPdf` | No | `"false"` | Print HTML to PDF; accepts `yes`, `no`, `true`, `false`, `1`, or `0`. |
-| `-UseDisplayName` | No | `$true` | Use readable labels; `$false` displays internal XML names. |
-| `-DateFormat` | No | `"MM/dd/yyyy"` | .NET date-only display format for HTML/PDF. |
-| `-DateTimeFormat` | No | `"MM/dd/yyyy HH:mm"` | .NET timestamp display format; retains the stored clock time and offset. |
+| `-UseXSN4HTML` | No | `$false` | Prefer an exact-version XSN view, falling back to generated HTML with a warning and audit reason. |
 | `-FieldRulesPath` | No | None | JSON field types, formats, and stored/display mappings for HTML/PDF. |
 
-`-UseDisplayName` is a Boolean parameter, so explicitly pass `$true` or `$false`
-when overriding it in PowerShell. `-Recurse` is a switch.
+`-UseXSN4HTML` is a Boolean parameter, so explicitly pass `$true` or `$false`.
+`-Recurse` is a switch. Pipeline labels are always readable; date formats now
+belong in the JSON file supplied by `-FieldRulesPath`, not pipeline parameters.
 Checkbox rendering is the default behavior of generated templates and has no
 separate pipeline parameter.
+
+### Optional XSN archival rendering
+
+```powershell
+.\RunInfoPathPipeline.ps1 `
+  -SourceDirectory "D:\Data\InfoPathXml" `
+  -OutputRootDirectory "D:\Data\InfoPathOutput" `
+  -XsnExportCsvPath "D:\Data\CopiedExport\XsnTemplateDownloads.csv" `
+  -UseXSN4HTML $true `
+  -FieldRulesPath "D:\Data\HtmlFieldRules.json" `
+  -PrintToPdf "true" `
+  -StartStep 1
+```
+
+Copy the entire export from [GetLibraryXsnVersions_SPS.ps1](./GetLibraryXsnVersions_SPS.ps1).
+The CSV's relative paths identify the XSN CAB files. Step 1 extracts declared
+views and rendering resources into `XSNTemplates\Manifests\<row>\Resources`,
+preserving their original relative names. Managed code is neither extracted
+for rendering nor executed. Previously processed inventories without
+`ResourcesRelativePath` require rerunning step 1 with `-UseXSN4HTML $true`.
+Standalone extraction uses [ProcessXsnTemplates.ps1](./ProcessXsnTemplates.ps1)
+with `-ExtractResources`.
+
+The dedicated [XsnHtmlRendering.ps1](./Helper/XsnHtmlRendering.ps1) renderer:
+
+- Requires an exact solution-version match for the same form using the existing
+  identity matching rules; nearest-higher matching remains for captions only.
+- Selects the manifest's default view and reuses its layout and captions.
+- Replaces bound controls with stored values formatted by HTML field rules.
+  Checkboxes/radio buttons use static `[X]`/`[ ]` and `(X)`/`( )` markers,
+  retaining saved selection tests rather than making every numeric field Boolean.
+- Uses saved lookup text, configured display mappings, or the stored value/ID.
+  It does not retrieve lookup lists or contact SharePoint.
+- Uses stored calculated results, not bound-control calculation expressions.
+- Removes conditional visibility gates around form content, hidden styles,
+  operational buttons, scripts, and legacy InfoPath browser behaviors.
+  Empty sections may remain visible. Missing repeating records are not invented.
+- Copies referenced images, CSS, and supported fonts under
+  `Html\Assets\<XSN-SHA256>`, shared by documents using the same package.
+  References remain relative, including for HTML in nested source folders.
+  Keep the entire HTML output folder together when moving the archive.
+- Uses the same PDF printing process as generated HTML.
+
+Missing XSNs, non-exact matches, missing assets, or unsupported view features
+produce a warning and generated-layout fallback. `Html\InfoPathXsnMatches.csv`
+records `RequestedRenderer`, `ActualRenderer`, `ViewName`, `FallbackReason`,
+HTML/PDF paths, and errors alongside template-match details. XSN preparation
+failures do not prevent CSV extraction. Invalid field rules still fail explicitly.
+If rendering or PDF creation fails for any document, the script retains the
+per-file error log and throws after processing the remaining files.
+
+This is not an InfoPath runtime or a guarantee of pixel-identical rendering.
+XSLT imports/includes, active CSS/imports, nonlocal rendering resources, and
+remaining unsupported extension functions trigger fallback. View-specific print
+settings are not currently translated; PDF pagination uses the browser.
+Validate representative saved records before accepting an archival batch.
 
 ### One-command orchestration (recommended)
 
@@ -414,8 +473,8 @@ to start there and run through step 7, or press Enter (or enter `1`) to run
 the entire pipeline. Invalid entries prompt again.
 
 Each step announces its number, description, and script before running and
-reports completion afterward. If a step throws an error, the pipeline stops
-and reports the failed step so you can fix the problem and restart there.
+reports completion afterward. Required-step errors stop the pipeline and identify
+the failed step. Optional XSN preparation errors warn and continue without XSNs.
 
 When resuming, use the same source and output folders and retain the required
 outputs from earlier steps; skipped steps are not rerun or regenerated.
@@ -432,9 +491,12 @@ For example, to rebuild templates and then render HTML:
 
 ### HTML field labels
 
-`RunInfoPathPipeline.ps1`, `BuildXsltFromGroupingCsv.ps1`,
+`BuildXsltFromGroupingCsv.ps1`,
 `CreateXSLTfromInfopathFile.ps1`, and `ProcessInfopathToHTML.ps1` accept
 `[bool] -UseDisplayName`, defaulting to `$true`.
+The orchestrator no longer exposes this parameter and always uses readable
+labels. The XSN rendering path preserves captions in the view regardless of
+standalone generated-renderer label settings.
 
 - `$true`: original captions recovered from the matched XSN when available.
   The XSN's default view takes precedence. Captions found only in other views
@@ -464,16 +526,8 @@ HTML renderer with the inventory to rematch captions for each data file.
 The renderer disables embedded sample captions, so an unmatched file cannot
 inherit a different form's labels.
 
-To render internal names:
-
-```powershell
-.\RunInfoPathPipeline.ps1 `
-  -SourceDirectory "C:\Data\InfoPathXml" `
-  -OutputRootDirectory "C:\Data\InfoPathOutput" `
-  -UseDisplayName $false
-```
-
-When running Stage 7 separately, pass `-UseDisplayName $false` there as well;
+To render internal names with generated HTML, run Stage 7 separately with
+`-UseDisplayName $false`;
 its default is `$true`, regardless of the default baked into the template.
 
 Run `.\Helper\TestUseDisplayName.ps1` to verify both label modes end-to-end,
@@ -482,31 +536,41 @@ The test uses temporary synthetic XML and removes its generated files afterward.
 
 ### HTML dates and boolean fields
 
-`RunInfoPathPipeline.ps1` accepts `-DateFormat` and `-DateTimeFormat` and passes
-them only to `ProcessInfopathToHTML.ps1` (Stage 7). The defaults are `MM/dd/yyyy`
-for dates and `MM/dd/yyyy HH:mm` for timestamps.
-Use a .NET date/time format string, for example:
+Both renderers read top-level `DateFormat` and `DateTimeFormat` from the JSON
+file supplied by `-FieldRulesPath`. The defaults are `MM/dd/yyyy` for dates and
+`MM/dd/yyyy HH:mm` for timestamps. A formats-only file is supported:
+
+```json
+{
+  "DateFormat": "dd/MM/yyyy",
+  "DateTimeFormat": "dd/MM/yyyy HH:mm",
+  "Fields": []
+}
+```
 
 ```powershell
 .\RunInfoPathPipeline.ps1 `
   -SourceDirectory "C:\Data\InfoPathXml" `
   -OutputRootDirectory "C:\Data\InfoPathOutput" `
-  -DateFormat "dd/MM/yyyy" `
-  -DateTimeFormat "dd/MM/yyyy HH:mm"
+  -FieldRulesPath "C:\Data\HtmlFieldRules.json"
 ```
+
+The standalone [ProcessInfopathToHTML.ps1](./ProcessInfopathToHTML.ps1) retains
+its legacy date-format parameters for compatibility. Explicit standalone
+parameters override JSON defaults; field-specific `Format` rules override both.
 
 - Only ISO date (`yyyy-MM-dd`) and date/time leaf values are formatted for HTML,
   including nested fields and repeating-table values. Optional fractional seconds
   (up to seven digits) and `Z` or numeric time-zone offsets are supported.
 - Formatting uses invariant culture without converting to the machine's time zone.
-  Date/time values retain their time by default. Use `-DateTimeFormat` to include
+  Date/time values retain their time by default. Use JSON `DateTimeFormat` to include
   seconds or the stored offset, or to intentionally hide time.
 - Source XML, normalized CSVs, metadata, and generated templates are unchanged.
   Empty values, invalid dates, and other text remain unchanged.
-- When running Stage 7 separately, supply both preferred format options there; no template
+- When running Stage 7 separately, supply the same field-rules file; no template
   regeneration is needed to change date formatting.
 - Empty format strings and invalid .NET format strings are rejected during
-  parameter validation, before processing begins. Format tokens are case-sensitive:
+  configuration validation, before processing begins. Format tokens are case-sensitive:
   `MM` means month, while `mm` means minute.
 - Newly generated templates display case-insensitive `true`/`false` field values
   as checked/unchecked, disabled checkboxes. Numeric `1`/`0` values render as
@@ -518,7 +582,7 @@ Use a .NET date/time format string, for example:
 
 Timestamp display examples for the source value `2026-10-23T14:05:06-04:00`:
 
-| `-DateTimeFormat` | Displayed value |
+| JSON `DateTimeFormat` | Displayed value |
 |---------------|-----------------|
 | `"MM/dd/yyyy HH:mm"` (default) | `10/23/2026 14:05` |
 | `"MM/dd/yyyy"` | `10/23/2026` |
@@ -527,9 +591,9 @@ Timestamp display examples for the source value `2026-10-23T14:05:06-04:00`:
 | `"MM/dd/yyyy HH:mm:ss"` | `10/23/2026 14:05:06` |
 | `"yyyy-MM-dd HH:mm:ss zzz"` | `2026-10-23 14:05:06 -04:00` |
 
-For a date-only value such as `2026-10-23`, use `-DateFormat`; the default output
-is `10/23/2026`. Earlier versions used `-DateFormat` for timestamps too; supply
-`-DateTimeFormat` explicitly when migrating an existing custom timestamp format.
+For a date-only value such as `2026-10-23`, use JSON `DateFormat`; the default
+output is `10/23/2026`. Move former pipeline date parameters into the field-rules
+file when migrating existing commands.
 
 Checkbox rules:
 
@@ -589,18 +653,18 @@ Replace its example namespace URI and XPaths with your form's actual values:
   -SourceDirectory "C:\Data\InfoPathXml" `
   -OutputRootDirectory "C:\Data\InfoPathOutput" `
   -FieldRulesPath "C:\Data\FieldRules.json" `
-  -DateFormat "MM/dd/yyyy" `
-  -DateTimeFormat "MM/dd/yyyy HH:mm" `
   -PrintToPdf "true"
 ```
 
 The file is a JSON object with:
 
 - `Culture`: .NET culture for numeric/currency formatting; defaults to `en-US`.
+- `DateFormat` and `DateTimeFormat`: global .NET display formats, defaulting to
+  `MM/dd/yyyy` and `MM/dd/yyyy HH:mm`; field-specific `Format` takes precedence.
 - `Namespaces`: XPath prefix/URI pairs. Use an explicit prefix for namespaced XML,
   even when the source uses a default namespace. These prefixes need not match
   those used in the source document.
-- `Fields`: an array of objects with required `XPath` and `Type`. Select the form
+- `Fields`: an optional array (default empty) of objects with required `XPath` and `Type`. Select the form
   element containing the value, not an attribute or an XHTML formatting element.
   Rules can match multiple occurrences and can be shared across form versions;
   an XPath with no matches is allowed. Overlapping rules or rules selecting both
@@ -610,7 +674,7 @@ The file is a JSON object with:
   visible rather than being guessed.
 - Optional `Format`: a .NET format for `Currency`, `Number`, `Percentage`, `Date`,
   or `DateTime`. Defaults are `C2`, `#,##0.############################`, `0.##%`,
-  `-DateFormat`, and `-DateTimeFormat`, respectively. Percentage values are fractions,
+  JSON `DateFormat`, and `DateTimeFormat`, respectively. Percentage values are fractions,
   not already multiplied by 100.
 - Optional relative child selectors: `UrlXPath`/`DescriptionXPath` for `Hyperlink`,
   `DisplayNameXPath` for `Person`, and required `SignerXPath`/`DateXPath` for
@@ -662,8 +726,7 @@ label mode, or PDF output without repeating extraction:
   -OutputDirectory "C:\Data\InfoPathOutput\Html" `
   -Recurse `
   -UseDisplayName $false `
-  -DateFormat "MM/dd/yyyy" `
-  -DateTimeFormat "MM/dd/yyyy HH:mm:ss" `
+  -FieldRulesPath "C:\Data\FieldRules.json" `
   -PrintToPdf "true"
 ```
 
@@ -707,8 +770,9 @@ output, or rerun the full pipeline. PDF output inherits the corrected HTML.
 - To enable checkboxes or label-mode support in older templates, rerun Stage 6
   and then Stage 7, or rerun the full pipeline. Existing templates are not
   upgraded merely by rerunning Stage 7.
-- To change only date formatting with current templates, rerun Stage 7 with
-  `-DateFormat` and/or `-DateTimeFormat`; regeneration of XSLT/CSS is unnecessary.
+- To change only date formatting with current templates, update JSON `DateFormat`
+  and/or `DateTimeFormat` and rerun Stage 7 with `-FieldRulesPath`;
+  regeneration of XSLT/CSS is unnecessary.
 - Generated templates continue to render `ATTACHMENT::` markers as relative links,
   including markers in repeated leaf values. Keep the HTML, CSS, and attachment
   folders together when moving the archive.
@@ -723,10 +787,11 @@ Run the integration checks from the repository root:
 .\Helper\TestPdfGeneration.ps1
 .\Helper\TestRichTextRendering.ps1
 .\Helper\TestCustomerFieldRendering.ps1
+.\Helper\TestXsnHtmlRendering.ps1 -PrintToPdf
 ```
 
 [TestUseDisplayName.ps1](./Helper/TestUseDisplayName.ps1) verifies pipeline label
-defaults, internal-name mode, generated-template defaults, standalone overrides,
+defaults, standalone internal-name mode, generated-template defaults, overrides,
 and unchanged field values and structural bindings.
 
 Run `.\Helper\TestHtmlValueFormatting.ps1` to verify date formatting and checkboxes
@@ -841,9 +906,10 @@ real browser PDF generation. A supported browser must be installed.
 
 - Confirm the value is an ISO date or date/time leaf value; arbitrary date-like
   text is not reformatted.
-- Run Stage 7 with the desired `-DateFormat` and `-DateTimeFormat`; opening or directly transforming
+- Run Stage 7 with the desired JSON `DateFormat` and `DateTimeFormat` using
+  `-FieldRulesPath`; opening or directly transforming
   the XSLT does not perform Stage 7's in-memory date formatting.
-- Date-only values use `-DateFormat`; timestamps use `-DateTimeFormat` and show
+- Date-only values use JSON `DateFormat`; timestamps use JSON `DateTimeFormat` and show
   hours/minutes by default. Include seconds/offset tokens when those should be visible.
 
 ### Boolean fields still show True/False text

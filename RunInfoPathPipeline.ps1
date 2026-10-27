@@ -40,27 +40,21 @@
     Accepted values: yes, no, true, false, 1, 0.
     Default: false
 
-.PARAMETER UseDisplayName
-    Prefer matched XSN captions, falling back to readable XML-name labels. Set to $false for exact
-    internal XML names. Structural identifiers are unchanged. Default: $true.
-
-.PARAMETER DateFormat
-    .NET format for date-only values displayed in HTML (and printed PDFs).
-    Does not change source XML, normalized CSVs, or metadata. Default: MM/dd/yyyy.
-
-.PARAMETER DateTimeFormat
-    .NET format for date/time values in HTML. Stored clock times and offsets are
-    retained. Default: MM/dd/yyyy HH:mm.
+.PARAMETER UseXSN4HTML
+    Prefer the matched exact-version XSN view for read-only archival HTML.
+    Falls back to generated HTML with a warning and audit reason. Default: $false.
 
 .PARAMETER FieldRulesPath
-    Optional JSON field definitions and display-value mappings for HTML output.
+    Optional JSON field definitions, DateFormat, DateTimeFormat, and display-value mappings for HTML output.
     Passed to template generation and HTML rendering; CSV extraction is unchanged.
 
 .PARAMETER XsnExportCsvPath
     Optional path to XsnTemplateDownloads.csv copied from the SPS export along
     with its XSN files. Step 1 extracts manifest information on this machine
     and view captions into OutputRootDirectory\XSNTemplates. Steps 6 and 7 use
-    that inventory for labels. When omitted, step 1 is explicitly skipped;
+    that inventory for labels. With UseXSN4HTML, also extracts rendering assets.
+    Preparation errors warn and continue without XSNs, preserving CSV extraction.
+    When omitted, step 1 is explicitly skipped;
     existing processed inventory under that folder is reused when resuming.
 
 .EXAMPLE
@@ -93,21 +87,7 @@ param(
 
     [string]$PrintToPdf = "false",
 
-    [bool]$UseDisplayName = $true,
-
-    [ValidateNotNullOrEmpty()]
-    [ValidateScript({
-        $null = [datetime]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
-        return $true
-    })]
-    [string]$DateFormat = "MM/dd/yyyy",
-
-    [ValidateNotNullOrEmpty()]
-    [ValidateScript({
-        $null = [datetimeoffset]::Now.ToString($_, [System.Globalization.CultureInfo]::InvariantCulture)
-        return $true
-    })]
-    [string]$DateTimeFormat = "MM/dd/yyyy HH:mm",
+    [bool]$UseXSN4HTML = $false,
 
     [string]$FieldRulesPath,
 
@@ -158,7 +138,7 @@ $steps = @(
         Name = "Extract XSN template information"
         Script = "ProcessXsnTemplates.ps1"
         Action = {
-            & $scriptPath -InputCsvPath $XsnExportCsvPath -OutputDirectory $xsnTemplatesDir
+            & $scriptPath -InputCsvPath $XsnExportCsvPath -OutputDirectory $xsnTemplatesDir -ExtractResources:$UseXSN4HTML
         }
     }
     @{
@@ -193,14 +173,14 @@ $steps = @(
         Name = "Build XSLT templates per group"
         Script = "BuildXsltFromGroupingCsv.ps1"
         Action = {
-            & $scriptPath -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -UseDisplayName $UseDisplayName -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
+            & $scriptPath -GroupingCsvPath $groupingDetailedPath -TemplateOutputDirectory $templatesDir -MappingCsvPath $templateMappingCsvPath -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
         }
     }
     @{
         Name = "Transform InfoPath XML to HTML"
         Script = "ProcessInfopathToHTML.ps1"
         Action = {
-            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseDisplayName $UseDisplayName -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
+            & $scriptPath -InfoPathDirectory $sourceRoot -MetadataCsvPath $versionCsvPath -GroupingCsvPath $groupingDetailedPath -TemplateMappingCsvPath $templateMappingCsvPath -OutputDirectory $htmlDir -PrintToPdf $PrintToPdf -Recurse:$Recurse.IsPresent -UseXSN4HTML $UseXSN4HTML -FieldRulesPath $FieldRulesPath -XsnInventoryCsvPath $xsnInventoryPath
         }
     }
 )
@@ -234,6 +214,7 @@ if ($StartStep -gt 1) {
 }
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnTemplates.ps1')
 $null = Import-HtmlFieldRules -Path $FieldRulesPath
 
 if (-not (Test-Path -LiteralPath $SourceDirectory -PathType Container)) {
@@ -297,6 +278,24 @@ try {
         }
         $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $step.Script
         Write-Stage -Group Run -Message $stageLabel
+        if ($index -eq 0) {
+            try {
+                & $step.Action
+                Write-Stage -Group Done -Message "$stageLabel completed."
+            }
+            catch {
+                $xsnInventoryPath = ''
+                Write-Stage -Group Warn -Message "XSN preparation failed; continuing XML extraction and generated HTML without XSNs: $($_.Exception.Message)"
+            }
+            continue
+        }
+        if ($index -ge 5 -and $xsnInventoryPath) {
+            try { $null = Import-XsnInventory -Path $xsnInventoryPath }
+            catch {
+                $xsnInventoryPath = ''
+                Write-Stage -Group Warn -Message "XSN inventory unavailable; using generated HTML: $($_.Exception.Message)"
+            }
+        }
         & $step.Action
         Write-Stage -Group Done -Message "$stageLabel completed."
     }

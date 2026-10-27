@@ -20,6 +20,10 @@
 .PARAMETER OutputDirectory
     Folder for processed XSN information. The pipeline uses its XSNTemplates folder.
 
+.PARAMETER ExtractResources
+    Also extract declared rendering resources with original relative paths.
+    Does not extract or execute managed code.
+
 .EXAMPLE
     .\ProcessXsnTemplates.ps1 `
       -InputCsvPath "D:\Data\XsnExport\XsnTemplateDownloads.csv" `
@@ -35,7 +39,9 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+
+    [switch]$ExtractResources
 )
 
 Set-StrictMode -Version Latest
@@ -127,6 +133,25 @@ function Read-XsnManifest {
             Copy-Item -LiteralPath $viewFiles[$index].Path -Destination $outputView -Force
         }
         $labelsPath = Join-Path -Path $ManifestDirectory -ChildPath 'FieldLabels.json'
+        if ($ExtractResources) {
+            $resourceDirectory = Join-Path -Path $ManifestDirectory -ChildPath 'Resources'
+            New-Item -Path $resourceDirectory -ItemType Directory -Force | Out-Null
+            Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $resourceDirectory 'manifest.xsf') -Force
+            $resources = @($viewFiles | ForEach-Object { $_.Resource })
+            $resources += @($root.SelectNodes("*[local-name()='package']/*[local-name()='files']/*[local-name()='file']") |
+                ForEach-Object { $_.GetAttribute('name') } |
+                Where-Object { [System.IO.Path]::GetExtension($_).ToLowerInvariant() -in @('.xsl', '.xslt', '.css', '.gif', '.png', '.jpg', '.jpeg', '.bmp', '.ico', '.woff', '.woff2', '.ttf') })
+            foreach ($resource in @($resources | Sort-Object -Unique)) {
+                $relative = $resource.Replace('/', '\')
+                if ([System.IO.Path]::IsPathRooted($relative) -or '..' -in $relative.Split('\')) {
+                    throw "Invalid XSN resource path: '$resource'"
+                }
+                $resourceTarget = Join-Path $resourceDirectory $relative
+                $extracted = Expand-XsnResource -XsnPath $XsnPath -ExpandPath $ExpandPath -Resource $resource -Directory (Join-Path $tempDirectory 'Resource')
+                New-Item -Path (Split-Path $resourceTarget -Parent) -ItemType Directory -Force | Out-Null
+                Copy-Item -LiteralPath $extracted -Destination $resourceTarget -Force
+            }
+        }
         [pscustomobject]@{ Labels = $labels } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $labelsPath -Encoding UTF8
         if ($candidates.Count -gt 0) {
             $candidates | Export-Csv -LiteralPath (Join-Path -Path $ManifestDirectory -ChildPath 'FieldLabelCandidates.csv') -NoTypeInformation -Encoding UTF8
@@ -200,6 +225,7 @@ try {
             SolutionVersion = ''
             SolutionName = ''
             ManifestPath = ''
+            ResourcesRelativePath = ''
             LabelsRelativePath = ''
             LabelCount = 0
             ViewCount = 0
@@ -231,6 +257,7 @@ try {
             $row.SolutionVersion = $manifest.SolutionVersion
             $row.SolutionName = $manifest.SolutionName
             $row.ManifestPath = $manifest.ManifestPath
+            if ($ExtractResources) { $row.ResourcesRelativePath = 'Manifests\{0:D4}\Resources' -f $rows.Count }
             $row.LabelsRelativePath = 'Manifests\{0:D4}\FieldLabels.json' -f $rows.Count
             $row.LabelCount = $manifest.LabelCount
             $row.ViewCount = $manifest.ViewCount

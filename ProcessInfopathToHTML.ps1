@@ -46,12 +46,14 @@
 	Default: $true.
 
 .PARAMETER DateFormat
+	Legacy standalone override for JSON DateFormat. Prefer FieldRulesPath.
 	.NET format for ISO date-only field values displayed in HTML.
 	Formatting uses invariant culture and preserves the source date/time offset.
 	Only the in-memory rendering document changes; source XML, CSVs, and metadata
 	are unchanged. Default: MM/dd/yyyy.
 
 .PARAMETER DateTimeFormat
+	Legacy standalone override for JSON DateTimeFormat. Prefer FieldRulesPath.
 	.NET format for ISO date/time values. Default: MM/dd/yyyy HH:mm.
 	Stored clock times and offsets are retained without local-time conversion.
 
@@ -63,6 +65,10 @@
 	Optional processed XSN inventory. Matches each file to its same-form exact
 	solutionVersion or nearest higher version and applies available XSN captions
 	when UseDisplayName is true. Writes InfoPathXsnMatches.csv under OutputDirectory.
+
+.PARAMETER UseXSN4HTML
+	Prefer the exact-version XSN view for static archival HTML. Missing or unsupported
+	views fall back to generated HTML with a warning and an audit reason. Default: $false.
 
 .EXAMPLE
 	.\ProcessInfopathToHTML.ps1 `
@@ -140,14 +146,21 @@ param(
 
 	[string]$FieldRulesPath,
 
-	[string]$XsnInventoryCsvPath
+	[string]$XsnInventoryCsvPath,
+
+	[bool]$UseXSN4HTML = $false
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\HtmlRendering.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnTemplates.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Helper\XsnHtmlRendering.ps1')
 $fieldRules = Import-HtmlFieldRules -Path $FieldRulesPath
+if (-not $PSBoundParameters.ContainsKey('DateFormat')) { $DateFormat = $fieldRules.DateFormat }
+if (-not $PSBoundParameters.ContainsKey('DateTimeFormat')) { $DateTimeFormat = $fieldRules.DateTimeFormat }
+$fieldRules.DateFormat = $DateFormat
+$fieldRules.DateTimeFormat = $DateTimeFormat
 $xsnInventory = Import-XsnInventory -Path $XsnInventoryCsvPath
 
 function Write-Stage {
@@ -801,6 +814,7 @@ $groupingIndex = New-FileRowIndex -Rows $groupingRows
 $templateMappingRows = @(Import-Csv -LiteralPath $TemplateMappingCsvPath)
 $templateMappingIndex = New-TemplateMappingIndex -Rows $templateMappingRows
 $xsltCache = @{}
+$xsnViewCache = @{}
 
 Write-Stage -Group Input -Message "Loaded metadata rows: $($metadataRows.Count)"
 Write-Stage -Group Input -Message "Loaded grouping rows: $($groupingRows.Count)"
@@ -852,6 +866,12 @@ foreach ($xmlFile in $xmlFiles) {
 		AppliedLabelCount = 0
 		Message = ''
 		Error = ''
+		RequestedRenderer = $(if ($UseXSN4HTML) { 'XSN' } else { 'Generated' })
+		ActualRenderer = ''
+		ViewName = ''
+		FallbackReason = ''
+		HtmlPath = ''
+		PdfPath = ''
 	}
 	$xsnMatches.Add($matchRow)
 	try {
@@ -892,58 +912,6 @@ foreach ($xmlFile in $xmlFiles) {
 			throw "File '$($xmlFile.FullName)' does not have a usable SuggestedGroup."
 		}
 
-		$templateMapKey = $suggestedGroup.ToLowerInvariant()
-		if (-not $templateMappingIndex.ContainsKey($templateMapKey)) {
-			throw "No template mapping row was found for SuggestedGroup '$suggestedGroup'."
-		}
-
-		$templateMapRow = $templateMappingIndex[$templateMapKey]
-		$resolvedXsltPath = [string]$templateMapRow.XsltPath
-		Write-Stage -Group Resolve -Message "Resolving XSLT for group '$suggestedGroup': XsltPath='$resolvedXsltPath'"
-		if ([string]::IsNullOrWhiteSpace($resolvedXsltPath)) {
-			throw "Mapped XSLT path is EMPTY (null/blank) for SuggestedGroup '$suggestedGroup'."
-		}
-		if (-not (Test-Path -LiteralPath $resolvedXsltPath -PathType Leaf)) {
-			$parentDir = Split-Path -Path $resolvedXsltPath -Parent
-			$exists = Test-Path -LiteralPath $parentDir -PathType Container
-			throw "XSLT file does not exist: '$resolvedXsltPath' (parent dir exists: $exists). Check that BuildXsltFromGroupingCsv.ps1 successfully generated the template."
-		}
-		Write-Stage -Group Resolve -Message "Using XSLT '$resolvedXsltPath'."
-
-		$resolvedCssPath = [string]$templateMapRow.CssPath
-		if (-not [string]::IsNullOrWhiteSpace($resolvedCssPath) -and (Test-Path -LiteralPath $resolvedCssPath -PathType Leaf)) {
-			$destinationCssPath = Join-Path -Path $destinationDirectory -ChildPath ([System.IO.Path]::GetFileName($resolvedCssPath))
-			if (-not (Test-Path -LiteralPath $destinationCssPath -PathType Leaf)) {
-				Write-Stage -Group Write -Message "Copying CSS to '$destinationCssPath'."
-				Copy-Item -LiteralPath $resolvedCssPath -Destination $destinationCssPath -Force
-			}
-		}
-
-		$xslt = Get-XsltTransformFromCache -XsltPath $resolvedXsltPath -Cache $xsltCache
-
-		$xsltArgs = New-Object System.Xml.Xsl.XsltArgumentList
-		$xsltArgs.AddParam("sourceFilePath", "", $xmlFile.FullName)
-		$xsltArgs.AddParam("sourceFileName", "", $xmlFile.Name)
-		$xsltArgs.AddParam("templateGroup", "", $suggestedGroup)
-		$xsltArgs.AddParam("UseDisplayName", "", $UseDisplayName)
-		$xsltArgs.AddParam("UseEmbeddedXsnLabels", "", $false)
-
-		if ($null -ne $metadataRow) {
-			foreach ($property in $metadataRow.PSObject.Properties) {
-				if ([string]::IsNullOrWhiteSpace($property.Name)) {
-					continue
-				}
-
-				$value = [string]$property.Value
-				if ([string]::IsNullOrWhiteSpace($value)) {
-					continue
-				}
-
-				$paramName = Convert-ToXsltParamName -Name $property.Name
-				$xsltArgs.AddParam($paramName, "", $value)
-			}
-		}
-
 		# Load into XmlDocument first so embedded attachment payloads can be decoded and replaced with file references.
 		$xmlSettings = [System.Xml.XmlReaderSettings]::new()
 		$xmlSettings.IgnoreComments = $true
@@ -974,6 +942,7 @@ foreach ($xmlFile in $xmlFiles) {
 		}
 
 		Export-HtmlFieldAttachments -Document $xmlDocument -Configuration $fieldRules -SourceFileDirectory $xmlFile.DirectoryName -SourceRoot $InfoPathDirectory -AttachmentOutputDirectory $attachmentOutputDirectory -RelativePrefix $attachmentDirectoryName
+		$xsnDocument = if ($UseXSN4HTML) { $xmlDocument.CloneNode($true) } else { $null }
 		Convert-HtmlFieldValues -Document $xmlDocument -Configuration $fieldRules -DateFormat $DateFormat -DateTimeFormat $DateTimeFormat
 		$xsnMatch = Find-XsnTemplate -Document $xmlDocument -Inventory $xsnInventory
 		$matchRow.RequestedVersion = $xsnMatch.RequestedVersion
@@ -992,18 +961,74 @@ foreach ($xmlFile in $xmlFiles) {
 		$matchGroup = if ($xsnMatch.Status -in @('NextVersion', 'NoMatch')) { 'Warn' } else { 'Resolve' }
 		Write-Stage -Group $matchGroup -Message "$($xmlFile.Name): $($xsnMatch.Message)"
 
-		$xmlNodeReader = [System.Xml.XmlNodeReader]::new($xmlDocument)
-		$writerSettings = $xslt.OutputSettings.Clone()
-		$xmlWriter = [System.Xml.XmlWriter]::Create($htmlOutputPath, $writerSettings)
-
-		try {
-			Write-Stage -Group Write -Message "Writing HTML '$htmlOutputPath'."
-			$xslt.Transform($xmlNodeReader, $xsltArgs, $xmlWriter)
+		$renderedWithXsn = $false
+		if ($UseXSN4HTML) {
+			try {
+				if ($xsnMatch.Status -ne 'ExactVersion') { throw "No exact-version XSN view match ($($xsnMatch.Status))." }
+				$template = $xsnMatch.Template
+				if ($template.Row.PSObject.Properties.Name -notcontains 'ResourcesRelativePath' -or -not $template.Row.ResourcesRelativePath) {
+					throw 'XSN rendering resources are missing. Rerun step 1 with -UseXSN4HTML $true.'
+				}
+				$manifest = Resolve-XsnLocalResource $template.InventoryRoot ($template.Row.ResourcesRelativePath + '\manifest.xsf')
+				$matchRow.ViewName = Write-XsnArchiveHtml -Document $xsnDocument -Configuration $fieldRules -ResourceDirectory (Split-Path $manifest -Parent) -TemplateHash $template.Row.Sha256 -HtmlPath $htmlOutputPath -OutputRoot $OutputDirectory -Cache $xsnViewCache
+				$renderedWithXsn = $true
+				$matchRow.ActualRenderer = 'XSN'
+			}
+			catch {
+				$matchRow.FallbackReason = $_.Exception.Message
+				Write-Stage -Group Warn -Message "XSN rendering fallback for '$($xmlFile.Name)': $($matchRow.FallbackReason)"
+				Write-ErrorLogEntry -ErrorLogEntries $errorLogEntries -SourceFile $xmlFile.FullName -Message "XSN fallback: $($matchRow.FallbackReason)"
+			}
 		}
-		finally {
-			$xmlWriter.Dispose()
-			$xmlNodeReader.Dispose()
+		if (-not $renderedWithXsn) {
+			$templateMapKey = $suggestedGroup.ToLowerInvariant()
+			if (-not $templateMappingIndex.ContainsKey($templateMapKey)) {
+				throw "No template mapping row was found for SuggestedGroup '$suggestedGroup'."
+			}
+			$templateMapRow = $templateMappingIndex[$templateMapKey]
+			$resolvedXsltPath = [string]$templateMapRow.XsltPath
+			if ([string]::IsNullOrWhiteSpace($resolvedXsltPath)) {
+				throw "Mapped XSLT path is EMPTY (null/blank) for SuggestedGroup '$suggestedGroup'."
+			}
+			if (-not (Test-Path -LiteralPath $resolvedXsltPath -PathType Leaf)) {
+				throw "XSLT file does not exist: '$resolvedXsltPath'. Check BuildXsltFromGroupingCsv.ps1 output."
+			}
+			Write-Stage -Group Resolve -Message "Using generated XSLT '$resolvedXsltPath'."
+			$resolvedCssPath = [string]$templateMapRow.CssPath
+			if (-not [string]::IsNullOrWhiteSpace($resolvedCssPath) -and (Test-Path -LiteralPath $resolvedCssPath -PathType Leaf)) {
+				$destinationCssPath = Join-Path $destinationDirectory ([System.IO.Path]::GetFileName($resolvedCssPath))
+				if (-not (Test-Path -LiteralPath $destinationCssPath -PathType Leaf)) {
+					Copy-Item -LiteralPath $resolvedCssPath -Destination $destinationCssPath -Force
+				}
+			}
+			$xslt = Get-XsltTransformFromCache -XsltPath $resolvedXsltPath -Cache $xsltCache
+			$xsltArgs = [System.Xml.Xsl.XsltArgumentList]::new()
+			$xsltArgs.AddParam('sourceFilePath', '', $xmlFile.FullName)
+			$xsltArgs.AddParam('sourceFileName', '', $xmlFile.Name)
+			$xsltArgs.AddParam('templateGroup', '', $suggestedGroup)
+			$xsltArgs.AddParam('UseDisplayName', '', $UseDisplayName)
+			$xsltArgs.AddParam('UseEmbeddedXsnLabels', '', $false)
+			if ($null -ne $metadataRow) {
+				foreach ($property in $metadataRow.PSObject.Properties) {
+					if (-not [string]::IsNullOrWhiteSpace($property.Name) -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+						$xsltArgs.AddParam((Convert-ToXsltParamName -Name $property.Name), '', [string]$property.Value)
+					}
+				}
+			}
+			$xmlNodeReader = [System.Xml.XmlNodeReader]::new($xmlDocument)
+			$writerSettings = $xslt.OutputSettings.Clone()
+			$xmlWriter = [System.Xml.XmlWriter]::Create($htmlOutputPath, $writerSettings)
+			try {
+				Write-Stage -Group Write -Message "Writing HTML '$htmlOutputPath'."
+				$xslt.Transform($xmlNodeReader, $xsltArgs, $xmlWriter)
+			}
+			finally {
+				$xmlWriter.Dispose()
+				$xmlNodeReader.Dispose()
+			}
+			$matchRow.ActualRenderer = 'Generated'
 		}
+		$matchRow.HtmlPath = $htmlOutputPath
 
 		$processedCount++
 		Write-Stage -Group Done -Message "HTML created for '$($xmlFile.Name)'."
@@ -1012,6 +1037,7 @@ foreach ($xmlFile in $xmlFiles) {
 			Write-Stage -Group Pdf -Message "Generating PDF '$pdfOutputPath'."
 			Convert-HtmlToPdf -BrowserPath $pdfBrowser -HtmlPath $htmlOutputPath -PdfPath $pdfOutputPath
 			$pdfCount++
+			$matchRow.PdfPath = $pdfOutputPath
 			Write-Stage -Group Pdf -Message "PDF created '$pdfOutputPath'."
 		}
 	}
@@ -1040,4 +1066,7 @@ Write-Stage -Group Write -Message "Error log: $ErrorLogPath"
 
 if ($shouldPrintPdf) {
 	Write-Stage -Group Pdf -Message "PDF files generated: $pdfCount"
+}
+if ($failedCount -gt 0) {
+	throw "HTML/PDF rendering failed for $failedCount file(s). See '$ErrorLogPath'."
 }

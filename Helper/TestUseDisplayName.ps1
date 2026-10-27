@@ -68,10 +68,11 @@ try {
             SourceDirectory = $source
             OutputRootDirectory = $output
         }
-        if ($mode -eq 'Internal') {
-            $parameters.UseDisplayName = $false
-        }
         & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters -StartStep 1
+        if ($mode -eq 'Internal') {
+            & (Join-Path $repoRoot 'BuildXsltFromGroupingCsv.ps1') -GroupingCsvPath (Join-Path $output 'Reports\InfoPathGroupingDetailed.csv') -TemplateOutputDirectory (Join-Path $output 'Templates') -MappingCsvPath (Join-Path $output 'Templates\InfoPathXsltGroupMap.csv') -UseDisplayName $false
+            & (Join-Path $repoRoot 'ProcessInfopathToHTML.ps1') -InfoPathDirectory $source -MetadataCsvPath (Join-Path $output 'Reports\InfoPathVersionMap.csv') -GroupingCsvPath (Join-Path $output 'Reports\InfoPathGroupingDetailed.csv') -TemplateMappingCsvPath (Join-Path $output 'Templates\InfoPathXsltGroupMap.csv') -OutputDirectory (Join-Path $output 'Html') -UseDisplayName $false
+        }
         Assert-Labels -HtmlPath (Join-Path -Path $output -ChildPath 'Html\Sample.html') -DisplayNames ($mode -eq 'Default')
         $outputs[$mode] = $output
 

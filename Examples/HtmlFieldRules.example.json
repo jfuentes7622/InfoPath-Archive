@@ -1,5 +1,7 @@
 {
   "Culture": "en-US",
+  "DateFormat": "MM/dd/yyyy",
+  "DateTimeFormat": "MM/dd/yyyy HH:mm",
   "Namespaces": {
     "my": "urn:example:infopath"
   },

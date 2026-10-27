@@ -106,8 +106,9 @@ try {
         }
         $dates = @('10/23/2026', '10/23/2026 00:30', '10/23/2026 23:45', '02/29/2024', '12/31/2025', '12/31/2025', '01/02/2026', '01/02/2026')
         if ($mode -eq 'Custom') {
-            $parameters.DateFormat = 'dd/MM/yyyy'
-            $parameters.DateTimeFormat = 'dd/MM/yyyy HH:mm'
+            $rulesPath = Join-Path $testRoot 'DateRules.json'
+            '{"DateFormat":"dd/MM/yyyy","DateTimeFormat":"dd/MM/yyyy HH:mm","Fields":[]}' | Set-Content $rulesPath -Encoding UTF8
+            $parameters.FieldRulesPath = $rulesPath
             $dates = @('23/10/2026', '23/10/2026 00:30', '23/10/2026 23:45', '29/02/2024', '31/12/2025', '31/12/2025', '02/01/2026', '02/01/2026')
         }
         & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') @parameters -StartStep 1
@@ -150,13 +151,8 @@ try {
     & (Join-Path -Path $repoRoot -ChildPath 'ProcessInfopathToHTML.ps1') @htmlParameters
     Assert-HtmlValues -HtmlPath (Join-Path -Path $htmlOutput -ChildPath 'Sample.html') -ExpectedDates @('2026-10-23 00:30:45 +14:00', '2026-10-23 23:45:00 +00:00')
 
-    foreach ($script in @('RunInfoPathPipeline.ps1', 'ProcessInfopathToHTML.ps1')) {
-        $invalidParameters = if ($script -eq 'RunInfoPathPipeline.ps1') {
-            @{ SourceDirectory = $source; OutputRootDirectory = $outputs.Default; DateFormat = '%' }
-        }
-        else {
-            $htmlParameters.Clone()
-        }
+    foreach ($script in @('ProcessInfopathToHTML.ps1')) {
+        $invalidParameters = $htmlParameters.Clone()
         $invalidParameters.DateFormat = '%'
         $rejected = $false
         try {

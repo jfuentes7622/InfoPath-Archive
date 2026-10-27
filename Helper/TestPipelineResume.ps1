@@ -89,8 +89,8 @@ function Assert-ResumeRun {
                 throw "Source path was not forwarded to $($call.Script)."
             }
         }
-        if ($bound.PSObject.Properties.Name -contains 'UseDisplayName' -and $bound.UseDisplayName -ne $false) {
-            throw "UseDisplayName was not forwarded to $($call.Script)."
+        if ($bound.PSObject.Properties.Name -contains 'UseXSN4HTML' -and $bound.UseXSN4HTML -ne $true) {
+            throw "UseXSN4HTML was not forwarded to $($call.Script)."
         }
         if ($bound.PSObject.Properties.Name -contains 'Recurse' -and -not $bound.Recurse.IsPresent) {
             throw "Recurse was not forwarded to $($call.Script)."
@@ -107,6 +107,8 @@ try {
     Copy-Item -LiteralPath (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') -Destination $pipelinePath
     'function Import-HtmlFieldRules { param([string]$Path) }' |
         Set-Content -LiteralPath (Join-Path -Path $helperPath -ChildPath 'HtmlRendering.ps1')
+    'function Import-XsnInventory { param([string]$Path) }' |
+        Set-Content -LiteralPath (Join-Path -Path $helperPath -ChildPath 'XsnTemplates.ps1')
     $callsPath = Join-Path -Path $testRoot -ChildPath 'calls.jsonl'
     $failurePath = Join-Path -Path $testRoot -ChildPath 'FailAt.txt'
     $stub = @'
@@ -118,7 +120,8 @@ param(
     [string]$SummaryCsvPath, [string]$GroupingCsvPath, [string]$TemplateOutputDirectory,
     [string]$MappingCsvPath, [bool]$UseDisplayName, [string]$FieldRulesPath,
     [string]$MetadataCsvPath, [string]$TemplateMappingCsvPath, [string]$PrintToPdf,
-    [string]$DateFormat, [string]$DateTimeFormat, [string]$XsnInventoryCsvPath
+    [string]$DateFormat, [string]$DateTimeFormat, [string]$XsnInventoryCsvPath,
+    [bool]$UseXSN4HTML, [switch]$ExtractResources
 )
 $name = Split-Path -Path $PSCommandPath -Leaf
 @{ Script = $name; Parameters = $PSBoundParameters } | ConvertTo-Json -Depth 5 -Compress |
@@ -136,7 +139,7 @@ if ((Test-Path -LiteralPath $failure) -and (Get-Content -LiteralPath $failure) -
         SourceDirectory = $sourcePath
         OutputRootDirectory = $outputPath
         Recurse = $true
-        UseDisplayName = $false
+        UseXSN4HTML = $true
         XsnExportCsvPath = (Join-Path -Path $testRoot -ChildPath 'Export\XsnTemplateDownloads.csv')
     }
     foreach ($start in 1..7) {

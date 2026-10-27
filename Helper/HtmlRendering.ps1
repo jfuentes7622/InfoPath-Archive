@@ -17,9 +17,9 @@ function Get-HtmlRuleProperty {
 
 	$property = $Rule.PSObject.Properties[$Name]
 	if ($null -ne $property) {
-		return $property.Value
+		return ,$property.Value
 	}
-	return $Default
+	return ,$Default
 }
 
 function Import-HtmlFieldRules {
@@ -27,6 +27,8 @@ function Import-HtmlFieldRules {
 
 	$configuration = [pscustomobject]@{
 		Culture = [System.Globalization.CultureInfo]::GetCultureInfo('en-US')
+		DateFormat = 'MM/dd/yyyy'
+		DateTimeFormat = 'MM/dd/yyyy HH:mm'
 		Namespaces = @{}
 		Fields = @()
 	}
@@ -45,6 +47,12 @@ function Import-HtmlFieldRules {
 		throw 'HTML field-rules Culture must not be blank.'
 	}
 	$configuration.Culture = [System.Globalization.CultureInfo]::GetCultureInfo($cultureName)
+	foreach ($name in @('DateFormat', 'DateTimeFormat')) {
+		$format = [string](Get-HtmlRuleProperty -Rule $inputRules -Name $name -Default $configuration.$name)
+		if ([string]::IsNullOrWhiteSpace($format)) { throw "HTML field-rules $name must not be blank." }
+		$null = [datetimeoffset]::Now.ToString($format, [System.Globalization.CultureInfo]::InvariantCulture)
+		$configuration.$name = $format
+	}
 	$namespaces = Get-HtmlRuleProperty -Rule $inputRules -Name 'Namespaces'
 	if ($null -ne $namespaces) {
 		if ($namespaces -isnot [pscustomobject]) {
@@ -57,7 +65,7 @@ function Import-HtmlFieldRules {
 			$configuration.Namespaces[$property.Name] = [string]$property.Value
 		}
 	}
-	$fields = Get-HtmlRuleProperty -Rule $inputRules -Name 'Fields'
+	$fields = Get-HtmlRuleProperty -Rule $inputRules -Name 'Fields' -Default @()
 	if ($fields -isnot [array]) {
 		throw 'HTML field-rules Fields must be an array.'
 	}
@@ -301,6 +309,8 @@ function Convert-HtmlFieldValues {
 		[string]$DateTimeFormat = 'MM/dd/yyyy HH:mm'
 	)
 
+	if (-not $PSBoundParameters.ContainsKey('DateFormat')) { $DateFormat = $Configuration.DateFormat }
+	if (-not $PSBoundParameters.ContainsKey('DateTimeFormat')) { $DateTimeFormat = $Configuration.DateTimeFormat }
 	$displayNamespace = 'urn:infopath-archive:display'
 	$formattingXPath = Get-HtmlFormattingXPath
 	$manager = [System.Xml.XmlNamespaceManager]::new($Document.NameTable)

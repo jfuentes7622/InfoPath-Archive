@@ -195,10 +195,11 @@ try {
         if ($_.Exception.Message -notlike '*XSN processing incomplete*') { throw }
         $caught = $true
     }
-    if (-not $caught -or
-        -not ($messages | Where-Object { $_ -like '[[]Error] Pipeline failed at Step 1/7:*' }) -or
-        (Test-Path -LiteralPath (Join-Path -Path $failedPipelineOutput -ChildPath 'Reports\InfoPathVersionMap.csv'))) {
-        throw 'Failed XSN processing did not identify step 1 and stop the remaining pipeline.'
+    if ($caught -or
+        -not ($messages | Where-Object { $_ -like '[[]Warn] XSN preparation failed*' }) -or
+        -not (Test-Path -LiteralPath (Join-Path -Path $failedPipelineOutput -ChildPath 'Reports\InfoPathVersionMap.csv')) -or
+        -not (Test-Path -LiteralPath (Join-Path -Path $failedPipelineOutput -ChildPath 'Html\Sample.html'))) {
+        throw 'Failed optional XSN processing prevented CSV extraction or generated HTML.'
     }
     Write-Host 'PASS: Local manifest processing, relocated exports, output folders, hashes, partial failures, stale-output protection, and seven-step pipeline.'
 }

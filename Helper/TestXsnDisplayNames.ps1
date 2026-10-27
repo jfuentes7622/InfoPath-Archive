@@ -222,8 +222,11 @@ try {
     $transform.Transform($sampleMap.SampleSourceFilePath, $direct)
     Assert-XsnHtml -Path $direct -Requester 'Who is requesting?'
 
-    & (Join-Path -Path $repoRoot -ChildPath 'RunInfoPathPipeline.ps1') `
-        -SourceDirectory $source -OutputRootDirectory $pipelineOutput -StartStep 6 -UseDisplayName $false 6>$null
+    & (Join-Path $repoRoot 'ProcessInfopathToHTML.ps1') -InfoPathDirectory $source `
+        -MetadataCsvPath (Join-Path $pipelineOutput 'Reports\InfoPathVersionMap.csv') `
+        -GroupingCsvPath (Join-Path $pipelineOutput 'Reports\InfoPathGroupingDetailed.csv') `
+        -TemplateMappingCsvPath (Join-Path $pipelineOutput 'Templates\InfoPathXsltGroupMap.csv') `
+        -OutputDirectory $htmlRoot -XsnInventoryCsvPath $inventoryPath -UseDisplayName $false 6>$null
     Assert-XsnHtml -Path (Join-Path -Path $htmlRoot -ChildPath 'AExact.html') -Requester '' -Internal $true
     $internalMatches = @(Import-Csv -LiteralPath (Join-Path -Path $htmlRoot -ChildPath 'InfoPathXsnMatches.csv'))
     if (@($internalMatches | Where-Object { [int]$_.AppliedLabelCount -ne 0 }).Count -gt 0) { throw 'Internal-name mode applied display labels.' }

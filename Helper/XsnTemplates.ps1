@@ -278,6 +278,7 @@ function Import-XsnInventory {
                 SharePointVersion = $spVersion
                 Labels = $labels
                 LabelsPath = $labelsPath
+                InventoryRoot = $root
             }
         }
     )
