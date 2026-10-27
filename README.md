@@ -126,9 +126,11 @@ the fallback never uses filename-only similarity when a conflicting name exists,
 and never selects an older version. Multiple eligible identities at the linked
 URL are rejected rather than guessed.
 
-Stage 7 logs the versions found in the successful processed inventory at the
-linked template URL, the XML's requested version, and the selected version/form
-identity. These are local inventory checks; the renderer does not contact the URL.
+Stage 7 logs a compact exact/next-match summary with the XML and selected XSN
+versions, noting a template-URL identity fallback without printing full URLs or
+form URNs. When no match is made, it reports available linked versions and the
+failure reason. Full URLs, identities, and matching details remain in the audit
+CSV. These are local inventory checks; the renderer does not contact the URL.
 
 `Html\InfoPathXsnMatches.csv` records each data file's requested version,
 identity, template href, exact/next-version/no-match result, selected version,
@@ -442,6 +444,12 @@ The dedicated [XsnHtmlRendering.ps1](./Helper/XsnHtmlRendering.ps1) renderer:
   they do not mean the renderer has fallen back to generated HTML.
 - Selects the manifest's default view and reuses its layout and captions.
 - Replaces bound controls with stored values formatted by HTML field rules.
+  Values render as borderless text without input backgrounds, shadows, or fixed
+  field heights. Original typography and field widths are retained; modest
+  `2px 4px` value padding and a `1.35` line height improve spacing and wrapping.
+  Layout-table borders and section styling are not removed.
+  Fixed InfoPath section/layout-region heights become minimum heights; sections
+  expand with their visible content instead of overlapping subsequent sections.
   Checkboxes/radio buttons use static `[X]`/`[ ]` and `(X)`/`( )` markers,
   retaining saved selection tests rather than making every numeric field Boolean.
 - Uses saved lookup text, configured display mappings, or the stored value/ID.

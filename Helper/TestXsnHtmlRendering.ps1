@@ -27,14 +27,17 @@ try {
 <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:my="urn:archive:fields" xmlns:xd="http://schemas.microsoft.com/office/infopath/2003" xmlns:xdFormatting="http://schemas.microsoft.com/office/infopath/2003/xslt/Formatting" xmlns:xdXDocument="http://schemas.microsoft.com/office/infopath/2003/xslt/xDocument" version="1.0">
  <xsl:output method="html"/>
  <xsl:template match="/">
- <html><head><link rel="stylesheet" href="styles.css"/></head><body>
+ <html><head><link rel="stylesheet" href="styles.css"/><style>.xdTextBox { border:1pt solid #dcdcdc; background:#eeeeee; padding:1px; white-space:nowrap; overflow:hidden; }</style></head><body>
  <h1>Original form layout</h1><img src="image.png"/>
+ <table id="archive-layout" style="border: 2px solid #123456; padding: 6px"><tr><td>Layout border</td></tr></table>
+ <div id="archive-section" class="xdSection" style="height:12px !important; max-height:12px !important; overflow:hidden"><p>Section first line</p><p>Section second line</p></div>
+ <p id="archive-after-section">Following section</p>
  <xsl:for-each select="my:Form">
- <span xd:binding="my:Date"><xsl:value-of select="xdFormatting:formatString(my:Date,'date','short')"/></span>
+ <span id="archive-date" class="xdTextBox" style="border:2px solid gray !important; background:#dddddd !important; padding:0 !important; height:1px !important; line-height:0 !important; font-family:Calibri; width:100%" xd:binding="my:Date"><xsl:value-of select="xdFormatting:formatString(my:Date,'date','short')"/></span>
  <span xd:binding="my:Calculated"><xsl:value-of select="my:Calculated * 99"/></span>
  <select xd:binding="my:Lookup"><xsl:for-each select="xdXDocument:GetDOM('LiveSharePoint')/*"><option>Live lookup</option></xsl:for-each></select>
  <span xd:binding="my:SavedText"/>
- <input type="checkbox" xd:binding="my:Flag"><xsl:if test="my:Flag='1'"><xsl:attribute name="CHECKED">CHECKED</xsl:attribute></xsl:if></input>
+ <input id="archive-check" type="checkbox" style="width:13px !important; height:13px; border:1px solid gray" xd:binding="my:Flag"><xsl:if test="my:Flag='1'"><xsl:attribute name="CHECKED">CHECKED</xsl:attribute></xsl:if></input>
  <input type="radio" value="Y" xd:binding="my:Radio"><xsl:if test="my:Radio='Y'"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if></input>
  <input type="radio" value="N" xd:binding="my:Radio"><xsl:if test="my:Radio='N'"><xsl:attribute name="checked">checked</xsl:attribute></xsl:if></input>
  <input type="button" value="Submit"/>
@@ -46,6 +49,28 @@ try {
  </xsl:template>
 </xsl:stylesheet>
 '@ | Set-Content (Join-Path $package 'view1.xsl') -Encoding UTF8
+    $adapted = New-XsnArchiveStylesheet (Read-XsnXml (Join-Path $package 'view1.xsl'))
+    $styledValue = $adapted.SelectSingleNode('//*[@id="archive-date"]')
+    if ($styledValue.GetAttribute('style') -match '(?i)border|background|padding|height|line-height' -or
+        $styledValue.GetAttribute('style') -notmatch 'font-family:Calibri' -or
+        $styledValue.GetAttribute('style') -notmatch 'width:100%') {
+        throw 'Control chrome was not removed while retaining typography and field width.'
+    }
+    $styledSelection = $adapted.SelectSingleNode('//*[@id="archive-check"]')
+    if ($styledSelection.GetAttribute('style') -match '(?i)width|height|border' -or
+        $styledSelection.GetAttribute('class') -notmatch '\barchive-selection\b') {
+        throw 'Static selection markers retained input dimensions or chrome.'
+    }
+    $archiveCss = $adapted.SelectSingleNode('//*[local-name()="body"]/*[local-name()="style"]').InnerText
+    foreach ($declaration in @('border: 0 !important', 'background: transparent !important', 'padding: 2px 4px !important', 'line-height: 1.35 !important')) {
+        if (-not $archiveCss.Contains($declaration)) { throw "Missing archival style '$declaration'." }
+    }
+    $section = $adapted.SelectSingleNode('//*[@id="archive-section"]')
+    if ($section.GetAttribute('class') -notmatch '\barchive-section\b' -or
+        $section.GetAttribute('style') -notmatch 'min-height:12px !important' -or
+        $section.GetAttribute('style') -match '(?i)(^|;)\s*(height|max-height|overflow)\s*:') {
+        throw 'Fixed section height was not converted to an expandable minimum height.'
+    }
     [System.IO.File]::WriteAllBytes((Join-Path $package 'image.png'), [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aCJkAAAAASUVORK5CYII='))
     '.record { background-image:url("image.png"); }' | Set-Content (Join-Path $package 'styles.css') -Encoding ASCII
     @'
@@ -109,17 +134,28 @@ try {
             $parameters.SourceDirectory = $versionSource
         }
         if ($PrintToPdf -and $mode -in @('Xsn', 'NextVersion', 'RenamedNextVersion')) { $parameters.PrintToPdf = 'true' }
-        & (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') @parameters 6>$null
+        $consoleLines = @(& (Join-Path $repoRoot 'RunInfoPathPipeline.ps1') @parameters 6>&1 | ForEach-Object { $_.ToString() })
         $htmlPath = Join-Path $output 'Html\Sample.html'
         $html = Get-Content $htmlPath -Raw
         $audit = @(Import-Csv (Join-Path $output 'Html\InfoPathXsnMatches.csv'))[0]
         if (-not $html.Contains('27.10.2026')) { throw "$mode did not use JSON date format." }
+        if ($mode -in @('Xsn', 'NextVersion', 'RenamedNextVersion')) {
+            $matchLines = @($consoleLines | Where-Object { $_ -match 'Using (exact|next) XSN match:' })
+            if ($matchLines.Count -eq 0 -or @($matchLines | Where-Object { $_ -match 'https?://|urn:|[A-Za-z]:\\' }).Count -ne 0) {
+                throw 'Console match summaries are missing or contain full paths/form identities.'
+            }
+            if (-not $audit.Message.Contains('http://sharepoint/forms/test.xsn')) { throw 'Detailed template URL was lost from the audit CSV.' }
+            if ($mode -ne 'Xsn' -and @($matchLines | Where-Object { $_ -like '*Using next XSN match: XML 1.0.0.0 -> XSN 1.0.0.1*' }).Count -ne 1) {
+                throw 'Next-version console summary does not identify the requested and selected versions.'
+            }
+        }
         if ($mode -eq 'Xsn') {
             foreach ($value in @('Original form layout', 'Hidden section', 'First row', 'Second row', 'Saved label', '314', '17', '[X]', '(X)', '( )', 'Rich content')) {
                 if (-not $html.Contains($value)) { throw "XSN output missing '$value'." }
             }
             if ($html -match '(?i)<input|<select|<script|display\s*:\s*none|visibility\s*:\s*hidden|unsafe\(\)|Live lookup') { throw 'XSN output retained interactive, hidden, or unsafe content.' }
             if ($audit.ActualRenderer -ne 'XSN' -or $audit.ViewName -ne 'Archive' -or $audit.FallbackReason) { throw 'XSN renderer was not used.' }
+            if (-not $html.Contains('border: 2px solid #123456; padding: 6px')) { throw 'Layout-table borders or padding were removed.' }
             $asset = @(Get-ChildItem (Join-Path $output 'Html\Assets') -Filter image.png -Recurse)
             if ($asset.Count -ne 1 -or (Get-FileHash $asset[0].FullName).Hash -ne (Get-FileHash (Join-Path $package 'image.png')).Hash) { throw 'Image was not copied once with original bytes.' }
             if (@(Get-ChildItem (Join-Path $output 'Html\Assets') -Filter styles.css -Recurse).Count -ne 1) { throw 'CSS was not copied.' }

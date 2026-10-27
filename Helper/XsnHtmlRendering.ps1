@@ -29,6 +29,14 @@ function Remove-XsnHiddenStyle {
     return [regex]::Replace($clean, '(?i)(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\s*(?:!important)?\s*(?=;|$)', '')
 }
 
+function Convert-XsnArchiveValueStyle {
+    param([string]$Style, [switch]$Selection)
+
+    $properties = 'border(?:-[a-z-]+)?|background(?:-[a-z-]+)?|box-shadow|outline(?:-[a-z-]+)?|(?:-webkit-|-moz-)?appearance|padding(?:-[a-z-]+)?|margin(?:-[a-z-]+)?|height|min-height|max-height|overflow(?:-[xy])?|white-space|text-overflow|opacity|line-height'
+    if ($Selection) { $properties += '|width|min-width|max-width' }
+    return [regex]::Replace($Style, "(?i)(?:^|;)\s*(?:$properties)\s*:[^;]*(?=;|$)", '')
+}
+
 function New-XsnArchiveStylesheet {
     param([System.Xml.XmlDocument]$View)
 
@@ -64,7 +72,10 @@ function New-XsnArchiveStylesheet {
         }
         $replacement.SetAttribute('class', ($replacement.GetAttribute('class') + ' archive-value').Trim())
         $type = $control.GetAttribute('type').ToLowerInvariant()
-        if ($control.LocalName -eq 'input' -and $type -in @('checkbox', 'radio')) {
+        $isSelection = $control.LocalName -eq 'input' -and $type -in @('checkbox', 'radio')
+        $replacement.SetAttribute('style', (Convert-XsnArchiveValueStyle -Style $replacement.GetAttribute('style') -Selection:$isSelection))
+        if ($isSelection) {
+            $replacement.SetAttribute('class', ($replacement.GetAttribute('class') + ' archive-selection'))
             $condition = $control.SelectSingleNode(".//xsl:if[xsl:attribute[translate(@name,'CHECKED','checked')='checked']]", $manager)
             if ($null -ne $condition) {
                 $test = $condition.GetAttribute('test')
@@ -109,6 +120,12 @@ function New-XsnArchiveStylesheet {
         }
         if ($node.NamespaceURI -ne $xsl -and $node.HasAttribute('style')) {
             $node.SetAttribute('style', (Remove-XsnHiddenStyle $node.GetAttribute('style')))
+        }
+        if ($node.NamespaceURI -ne $xsl -and $node.GetAttribute('class') -match '\bxd(?:Section|RepeatingSection|Repeating|LayoutRegion)\b') {
+            $sectionStyle = [regex]::Replace($node.GetAttribute('style'), '(?i)(^|;)\s*height\s*:', '$1min-height:')
+            $sectionStyle = [regex]::Replace($sectionStyle, '(?i)(?:^|;)\s*(?:max-height|overflow(?:-[xy])?)\s*:[^;]*(?=;|$)', '')
+            $node.SetAttribute('style', $sectionStyle)
+            $node.SetAttribute('class', ($node.GetAttribute('class') + ' archive-section'))
         }
     }
     foreach ($attribute in @($View.SelectNodes("//xsl:attribute[translate(@name,'STYLE','style')='style']", $manager))) {
@@ -172,7 +189,43 @@ function New-XsnArchiveStylesheet {
     $body = $View.SelectSingleNode("//*[local-name()='body' and namespace-uri()!='$xsl']")
     if ($null -ne $body) {
         $style = $View.CreateElement('style', $body.NamespaceURI)
-        $style.InnerText = '.archive-value { white-space: pre-wrap; overflow-wrap: anywhere; height: auto !important; min-height: 1em; } @media print { .archive-value { color: black !important; } }'
+        $style.InnerText = @'
+.archive-value {
+    display: inline-block;
+    box-sizing: border-box;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+    appearance: none !important;
+    opacity: 1 !important;
+    padding: 2px 4px !important;
+    margin: 1px 0 !important;
+    height: auto !important;
+    min-height: 1em;
+    max-height: none !important;
+    max-width: 100%;
+    overflow: visible !important;
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere;
+    text-overflow: clip !important;
+    line-height: 1.35 !important;
+    vertical-align: top;
+}
+.archive-selection {
+    width: auto !important;
+    white-space: nowrap !important;
+    padding: 2px 3px !important;
+}
+.archive-section {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+@media print {
+    .archive-value { color: black !important; }
+}
+'@
         $null = $body.PrependChild($style)
     }
     return ,$View

@@ -966,10 +966,17 @@ foreach ($xmlFile in $xmlFiles) {
 		$appliedLabels = Set-XsnDisplayLabels -Document $xmlDocument -Match $xsnMatch
 		$matchRow.AppliedLabelCount = if ($UseDisplayName) { $appliedLabels } else { 0 }
 		$matchGroup = if ($xsnMatch.Status -in @('NextVersion', 'NoMatch')) { 'Warn' } else { 'Resolve' }
-		if ($xsnMatch.LinkedTemplateMessage) {
-			Write-Stage -Group Resolve -Message "$($xmlFile.Name): $($xsnMatch.LinkedTemplateMessage)"
+		if ($null -ne $xsnMatch.Template) {
+			$matchType = if ($xsnMatch.Status -eq 'NextVersion') { 'next' } else { 'exact' }
+			$identityNote = if ($xsnMatch.MatchBasis -eq 'TemplateUrlIdentityFallback') { ' (template URL match; form name differs)' } else { '' }
+			Write-Stage -Group $matchGroup -Message "$($xmlFile.Name): Using $matchType XSN match: XML $($xsnMatch.RequestedVersion) -> XSN $($matchRow.MatchedVersion)$identityNote."
 		}
-		Write-Stage -Group $matchGroup -Message "$($xmlFile.Name): $($xsnMatch.Message)"
+		else {
+			if ($xsnMatch.LinkedTemplateVersions) {
+				Write-Stage -Group Resolve -Message "$($xmlFile.Name): Linked XSN version(s): $($xsnMatch.LinkedTemplateVersions)."
+			}
+			Write-Stage -Group $matchGroup -Message "$($xmlFile.Name): $($xsnMatch.Message)"
+		}
 
 		$renderedWithXsn = $false
 		if ($UseXSN4HTML) {
