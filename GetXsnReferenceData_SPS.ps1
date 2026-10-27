@@ -11,6 +11,8 @@
     User Information List reads include retained rows where SharePoint exposes
     them; deleted/purged rows cannot be recovered. User IDs are site-collection
     scoped; exact stored login/claims identities are preserved.
+    Referenced URLs may identify subwebs. Opens each exact requested web, then
+    reads its owning site-collection URL rather than treating it as a collection.
 
     This is a CURRENT snapshot, not historical labels as of an archived form.
     CSVs contain personal information: restrict access and retention, and copy
@@ -141,7 +143,7 @@ try {
     if ($dependencies.SchemaVersion -ne 1 -or $dependencies.Lists -isnot [array] -or $dependencies.UserSites -isnot [array] -or
         $dependencies.Templates -isnot [array] -or $dependencies.Warnings -isnot [array]) { throw 'Invalid dependency manifest: expected schema 1 with array collections.' }
     foreach ($warning in $dependencies.Warnings) { $log.Add("Discovery warning: $warning") }
-    if (-not (Get-Command Get-SPSite -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command Get-SPWeb -ErrorAction SilentlyContinue)) {
         Add-PSSnapin Microsoft.SharePoint.PowerShell -ErrorAction Stop
     }
     $requests = @{}
@@ -163,14 +165,13 @@ try {
         }
     }
     foreach ($request in @($requests.Values | Sort-Object SiteUrl, ListId)) {
-        $site = $null; $web = $null
+        $web = $null
         $result = [pscustomobject][ordered]@{ SiteUrl = $request.SiteUrl; ListId = $request.ListId; Status = 'Failed'; Error = ''; DataPath = ''; RowCount = 0; SiteCollectionUrl = '' }
         $listResults.Add($result)
         try {
-            $site = Get-SPSite -Identity $request.SiteUrl -ErrorAction Stop
-            $result.SiteCollectionUrl = ConvertTo-XsnExportUrl $site.Url
-            $web = $site.OpenWeb([uri]::UnescapeDataString(([uri]$request.SiteUrl).AbsolutePath), $true)
+            $web = Get-SPWeb -Identity $request.SiteUrl -ErrorAction Stop
             if ((ConvertTo-XsnExportUrl $web.Url) -ine $request.SiteUrl) { throw "Requested web does not resolve exactly: '$($request.SiteUrl)'." }
+            $result.SiteCollectionUrl = ConvertTo-XsnExportUrl $web.Site.Url
             $list = $web.Lists[[guid]$request.ListId]
             $result.DataPath = 'List_{0:D4}.csv' -f $listResults.Count
             $result.RowCount = Export-XsnListRows $list $request.Fields (Join-Path $root $result.DataPath)
@@ -178,18 +179,18 @@ try {
         }
         catch { $result.Error = $_.Exception.Message; $failed = $true }
         finally {
-            try { if ($null -ne $web) { $web.Dispose() } }
-            finally { if ($null -ne $site) { $site.Dispose() } }
+            if ($null -ne $web) { $web.Dispose() }
             $log.Add("List $($result.SiteUrl) $($result.ListId): $($result.Status) $($result.Error)")
         }
     }
     $collections = @{}
     foreach ($requested in @($dependencies.UserSites | Sort-Object -Unique)) {
-        $site = $null
+        $web = $null
         try {
             $url = ConvertTo-XsnExportUrl $requested
-            $site = Get-SPSite -Identity $url -ErrorAction Stop
-            $collectionUrl = ConvertTo-XsnExportUrl $site.Url
+            $web = Get-SPWeb -Identity $url -ErrorAction Stop
+            if ((ConvertTo-XsnExportUrl $web.Url) -ine $url) { throw "Requested user-source web does not resolve exactly: '$url'." }
+            $collectionUrl = ConvertTo-XsnExportUrl $web.Site.Url
             if (-not $collections.ContainsKey($collectionUrl)) { $collections[$collectionUrl] = [System.Collections.Generic.List[string]]::new() }
             if (-not $collections[$collectionUrl].Contains($url)) { $collections[$collectionUrl].Add($url) }
         }
@@ -198,7 +199,7 @@ try {
             $userResults.Add([pscustomobject]@{ SiteCollectionUrl = ''; SourceSiteUrls = @($requested); Status = 'Failed'; Error = $_.Exception.Message; DataPath = ''; RowCount = 0 })
             $log.Add("User source '$requested': Failed $($_.Exception.Message)")
         }
-        finally { if ($null -ne $site) { $site.Dispose() } }
+        finally { if ($null -ne $web) { $web.Dispose() } }
     }
     foreach ($collectionUrl in @($collections.Keys | Sort-Object)) {
         $site = $null; $web = $null

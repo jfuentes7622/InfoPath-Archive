@@ -66,6 +66,7 @@ class XsnReferenceTestList {
 }
 class XsnReferenceTestWeb {
     [string]$Url
+    [object]$Site
     [hashtable]$Lists
     [object]$SiteUserInfoList
     [void] Dispose() { [XsnReferenceTestState]::DisposedWebs++ }
@@ -195,11 +196,33 @@ try {
     $users.Rows = @(@{ ID = 17; Name = 'i:0#.w|DOMAIN\retained'; Title = 'Retained User'; EMail = 'retained@example.test' })
     $fakeWeb = [XsnReferenceTestWeb]::new()
     $fakeWeb.Url = 'https://example.test/sites/owner'
+    $fakeWeb.Site = [pscustomobject]@{ Url = $fakeWeb.Url }
     $fakeWeb.Lists = @{ ([guid]'11111111-1111-1111-1111-111111111111') = $lookup; ([guid]'22222222-2222-2222-2222-222222222222') = $broken }
     $fakeWeb.SiteUserInfoList = $users
+    $subwebList = [XsnReferenceTestList]::new()
+    $subwebList.Rows = @(@{ ID = 9; Value = 'GB'; Title = 'Subweb-only Country' })
+    $resourcesWeb = [XsnReferenceTestWeb]::new()
+    $resourcesWeb.Url = $fakeWeb.Url + '/resources'
+    $resourcesWeb.Site = $fakeWeb.Site
+    $resourcesWeb.Lists = @{ ([guid]'11111111-1111-1111-1111-111111111111') = $subwebList }
+    $redWeb = [XsnReferenceTestWeb]::new()
+    $redWeb.Url = $fakeWeb.Url + '/red'
+    $redWeb.Site = $fakeWeb.Site
+    $subweb = [XsnReferenceTestWeb]::new()
+    $subweb.Url = $fakeWeb.Url + '/subweb'
+    $subweb.Site = $fakeWeb.Site
+    $fakeWebs = @{}
+    foreach ($web in @($fakeWeb, $resourcesWeb, $redWeb, $subweb)) { $fakeWebs[$web.Url] = $web }
+    function Get-SPWeb {
+        [CmdletBinding()]param([string]$Identity)
+        $url = $Identity.TrimEnd('/')
+        if (-not $fakeWebs.ContainsKey($url)) { throw "Synthetic exact web resolution failure: $Identity" }
+        [XsnReferenceTestState]::OpenedWebs++
+        return $fakeWebs[$url]
+    }
     function Get-SPSite {
         [CmdletBinding()]param([string]$Identity)
-        if ($Identity -like '*unreachable*') { throw 'Synthetic site resolution failure.' }
+        if ($Identity.TrimEnd('/') -ine $fakeWeb.Url) { throw "Get-SPSite requires a site-collection URL, not a subweb: $Identity" }
         [XsnReferenceTestState]::OpenedSites++
         $site = [XsnReferenceTestSite]::new(); $site.Web = $fakeWeb
         return $site
@@ -244,6 +267,32 @@ try {
     Assert-XsnReference ($listRows[0].Tags -ceq 'A;#B' -and $listRows[0].ID -eq '1') 'Meaningful multivalues and ID column.'
     Assert-XsnReference ($listRows[0].LookupRef -ceq '7' -and $listRows[0].UserRef -ceq '42' -and $listRows[0].MultiRef -ceq '42;#43') 'Lookup and User values/collections store IDs, not labels or type names.'
     Assert-XsnReference ($manifest.Dependencies.UserSites.Count -eq 2) 'Entire dependency object retained.'
+    $subwebInput = [ordered]@{
+        SchemaVersion = 1; Templates = @(); Warnings = @()
+        Lists = @(@{ SiteUrl = $resourcesWeb.Url; ListId = '11111111-1111-1111-1111-111111111111'; Fields = @('Value', 'Title') })
+        UserSites = @($fakeWeb.Url, $resourcesWeb.Url, $redWeb.Url)
+    }
+    $subwebInputPath = Join-Path $work 'SubwebInput.json'
+    $subwebInput | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $subwebInputPath -Encoding UTF8
+    $subwebRoot = & $exporter -DependencyManifestPath $subwebInputPath -LocalPath (Join-Path $work 'Subwebs') -PageSize 1
+    $subwebManifest = Get-Content -LiteralPath (Join-Path $subwebRoot 'Manifest.json') -Raw | ConvertFrom-Json
+    $subwebRows = @(Import-Csv -LiteralPath (Join-Path $subwebRoot $subwebManifest.Lists[0].DataPath))
+    Assert-XsnReference ($subwebManifest.Lists[0].Status -ceq 'Success' -and $subwebRows.Count -eq 1 -and $subwebRows[0].Title -ceq 'Subweb-only Country') 'Lookup export opens the exact subweb, not the collection root with the same list GUID.'
+    Assert-XsnReference ($subwebManifest.Lists[0].SiteCollectionUrl -ceq $fakeWeb.Url) 'Subweb list records its owning collection.'
+    Assert-XsnReference ($subwebManifest.Users.Count -eq 1 -and $subwebManifest.Users[0].Status -ceq 'Success' -and $subwebManifest.Users[0].SourceSiteUrls.Count -eq 3) 'Root/resources/red user sources deduplicate to their owning collection.'
+    $subwebUsers = @(Import-Csv -LiteralPath (Join-Path $subwebRoot $subwebManifest.Users[0].DataPath))
+    Assert-XsnReference ($subwebUsers.Count -eq 1 -and $subwebUsers[0].DisplayName -ceq 'Retained User') 'Subweb user sources export the root User Information List.'
+    $subwebImported = Import-HtmlReferenceData $subwebRoot
+    Assert-XsnReference ($subwebImported.Lists.ContainsKey($resourcesWeb.Url + '|11111111-1111-1111-1111-111111111111') -and $subwebImported.Users[0].Entry.SourceSiteUrls -contains $redWeb.Url) 'Consumer retains subweb lookup keys and person-source scope.'
+    $subwebInput.Lists[0].SiteUrl = $resourcesWeb.Url + '/missing'
+    $subwebInput.UserSites = @($redWeb.Url + '/missing')
+    $subwebInput | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $subwebInputPath -Encoding UTF8
+    $missingWebThrew = $false
+    try { $null = & $exporter -DependencyManifestPath $subwebInputPath -LocalPath (Join-Path $work 'MissingWeb') }
+    catch { $missingWebThrew = $true }
+    $missingWebRoot = @(Get-ChildItem -LiteralPath (Join-Path $work 'MissingWeb') -Directory)[0].FullName
+    $missingWebManifest = Get-Content -LiteralPath (Join-Path $missingWebRoot 'Manifest.json') -Raw | ConvertFrom-Json
+    Assert-XsnReference ($missingWebThrew -and $missingWebManifest.Lists[0].Status -ceq 'Failed' -and $missingWebManifest.Users[0].Status -ceq 'Failed') 'Missing subwebs must fail explicitly rather than export from a parent.'
     $emptyList = [XsnReferenceTestList]::new(); $emptyList.Rows = @()
     $fakeWeb.Lists[([guid]'33333333-3333-3333-3333-333333333333')] = $emptyList
     [ordered]@{
@@ -282,7 +331,7 @@ try {
     Assert-XsnReference ([XsnReferenceTestState]::OpenedSites -eq [XsnReferenceTestState]::DisposedSites) 'All owned SPSites disposed.'
     Assert-XsnReference ([XsnReferenceTestState]::OpenedWebs -eq [XsnReferenceTestState]::DisposedWebs) 'All owned SPWebs disposed.'
     Assert-XsnReference ([XsnReferenceTestState]::PageReads -ge 6) 'Paged facade exercised.'
-    Write-Host 'PASS: offline discovery, real sample (if supplied), SPS facade paging/deduplication/partial failures/disposal, and actual export-to-consumer zero/one/many-row interoperability.'
+    Write-Host 'PASS: offline discovery, real sample (if supplied), exact subwebs, collection-scoped users, SPS facade paging/deduplication/partial failures/disposal, and actual export-to-consumer zero/one/many-row interoperability.'
 }
 finally {
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }

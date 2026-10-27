@@ -147,6 +147,10 @@ row counts, status, errors, and UTC export time in `Manifest.json`. Reused
 connections are deduplicated. It does not create users, change SharePoint data,
 expand groups, or query Active Directory. Partial exports remain available for
 inspection, but export failures are reported explicitly.
+List and user-source URLs may point to subwebs rather than site-collection roots.
+The exporter opens each exact requested web with `Get-SPWeb`, obtains the owning
+collection from that web, and exports user information once per collection.
+It does not pass subweb URLs to `Get-SPSite` or silently substitute a parent web.
 
 Resolution prefers saved display text, including matching cached rows in the
 XML, before using an exported label. Existing explicit HTML field-rule value
@@ -992,6 +996,9 @@ from both reference-enabled HTML paths.
 dependency discovery and the SPS exporter with an in-process SharePoint facade,
 including paging, deduplication, partial failures, and object disposal. This
 does not replace an authorized integration run on a live SharePoint Server.
+Its subweb regressions restrict `Get-SPSite` to collection roots, exercise
+separate lookup and user-source webs under one collection, and reject missing
+webs without exporting a parent's data.
 
 [TestXsnReferenceDownloadDiscovery.ps1](./Helper/TestXsnReferenceDownloadDiscovery.ps1)
 checks direct download-inventory/CAB inputs, recursive folder discovery, all
